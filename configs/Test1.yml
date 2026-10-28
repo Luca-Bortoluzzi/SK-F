@@ -1,0 +1,25 @@
+lab_name: test
+description: "Negative stress test: 2,000 nodes with many semantic errors"
+metadata:
+  version: "2.0"
+  author: "Luca-Bortoluzzi"
+nodes:
+  pc_a :
+    type : host
+    interfaces :
+      - network : lan_a
+        ip : 10.0.1.10/24
+    default_gateway : 10.0.1.1
+  r1:
+    type: router
+    interfaces:
+      - network: lan_a
+        ip: 10.0.1.1/24
+      - network: lan_b
+        ip: 10.0.2.1/24
+  pc_b :
+    type : host
+    interfaces :
+      - network : lan_b
+        ip : 10.0.2.10/24
+    default_gateway : 10.0.2.1

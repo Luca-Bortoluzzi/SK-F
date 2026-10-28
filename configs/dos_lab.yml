@@ -1,0 +1,221 @@
+lab_name: dos_lab
+
+description: >
+  Extended Kathara lab for controlled DoS simulation. The topology represents a
+  multi-LAN enterprise network with several legitimate hosts, a separate
+  attacker network, and a DMZ containing the target server. The lab is designed
+  to test availability, ICMP RTT, TCP timing, and application degradation under
+  anomalous traffic.
+
+metadata:
+  description: "Enterprise DoS simulation topology with multiple legitimate hosts"
+  version: 1.0
+  author: "Luca-Bortoluzzi"
+  email: "luca.bortoluzzi921@edu.unito.it"
+  web: "http://www.kathara.org/"
+
+simulation:
+  enabled: true
+  target_node: server
+
+nodes:
+
+  # =========================
+  # LAN A - legitimate users
+  # =========================
+
+  pc_a1:
+    type: host
+    interfaces:
+      - network: lan_a
+        ip: 10.10.1.10/24
+    default_gateway: 10.10.1.1
+
+  pc_a2:
+    type: host
+    interfaces:
+      - network: lan_a
+        ip: 10.10.1.11/24
+    default_gateway: 10.10.1.1
+
+  pc_a3:
+    type: host
+    interfaces:
+      - network: lan_a
+        ip: 10.10.1.12/24
+    default_gateway: 10.10.1.1
+
+  pc_a4:
+    type: host
+    interfaces:
+      - network: lan_a
+        ip: 10.10.1.13/24
+    default_gateway: 10.10.1.1
+
+  # =========================
+  # LAN B - legitimate users
+  # =========================
+
+  pc_b1:
+    type: host
+    interfaces:
+      - network: lan_b
+        ip: 10.10.2.10/24
+    default_gateway: 10.10.2.1
+
+  pc_b2:
+    type: host
+    interfaces:
+      - network: lan_b
+        ip: 10.10.2.11/24
+    default_gateway: 10.10.2.1
+
+  pc_b3:
+    type: host
+    interfaces:
+      - network: lan_b
+        ip: 10.10.2.12/24
+    default_gateway: 10.10.2.1
+
+  pc_b4:
+    type: host
+    interfaces:
+      - network: lan_b
+        ip: 10.10.2.13/24
+    default_gateway: 10.10.2.1
+
+  # =========================
+  # Attacker network
+  # =========================
+
+  attacker:
+    type: host
+    interfaces:
+      - network: lan_attackers
+        ip: 10.20.1.10/24
+    default_gateway: 10.20.1.1
+
+  zombie_1:
+    type: host
+    interfaces:
+      - network: lan_attackers
+        ip: 10.20.1.11/24
+    default_gateway: 10.20.1.1
+    commands:
+      - python3 /hostlab/zombie.py > /tmp/zombie.log 2>&1 &
+
+  zombie_2:
+    type: host
+    interfaces:
+      - network: lan_attackers
+        ip: 10.20.1.12/24
+    default_gateway: 10.20.1.1
+    commands:
+      - python3 /hostlab/zombie.py > /tmp/zombie.log 2>&1 &
+
+  zombie_3:
+    type: host
+    interfaces:
+      - network: lan_attackers
+        ip: 10.20.1.13/24
+    default_gateway: 10.20.1.1
+    commands:
+      - python3 /hostlab/zombie.py > /tmp/zombie.log 2>&1 &
+
+  # =========================
+  # DMZ - target server
+  # =========================
+
+  server:
+    type: host
+    interfaces:
+      - network: dmz_servers
+        ip: 10.30.1.10/24
+    default_gateway: 10.30.1.1
+    commands:
+      - SERVICE_MAX_ACTIVE=20 SERVICE_BACKLOG=20 SERVICE_METRICS_PATH=/shared/server_metrics.csv SERVICE_METRICS_SCENARIO_PATH=/shared/server_metrics_scenario python3 /hostlab/server/service.py > /tmp/service.log 2>&1 &
+
+  # =========================
+  # Enterprise routers
+  # =========================
+
+  r1:
+    type: router
+    interfaces:
+      - network: lan_a
+        ip: 10.10.1.1/24
+      - network: r1_r2
+        ip: 10.0.12.1/30
+      - network: r1_r3
+        ip: 10.0.13.1/30
+    frr:
+      enabled: true
+      protocol: ospf
+      router_id: 1.1.1.1
+      area: 0
+
+  r2:
+    type: router
+    interfaces:
+      - network: lan_b
+        ip: 10.10.2.1/24
+      - network: r1_r2
+        ip: 10.0.12.2/30
+      - network: r2_r4
+        ip: 10.0.24.1/30
+      - network: r2_core
+        ip: 10.0.25.1/30
+    frr:
+      enabled: true
+      protocol: ospf
+      router_id: 2.2.2.2
+      area: 0
+
+  r3:
+    type: router
+    interfaces:
+      - network: r1_r3
+        ip: 10.0.13.2/30
+      - network: r3_r4
+        ip: 10.0.34.1/30
+      - network: r3_core
+        ip: 10.0.35.1/30
+    frr:
+      enabled: true
+      protocol: ospf
+      router_id: 3.3.3.3
+      area: 0
+
+  r4:
+    type: router
+    interfaces:
+      - network: r2_r4
+        ip: 10.0.24.2/30
+      - network: r3_r4
+        ip: 10.0.34.2/30
+      - network: r4_core
+        ip: 10.0.45.1/30
+    frr:
+      enabled: true
+      protocol: ospf
+      router_id: 4.4.4.4
+      area: 0
+
+  core:
+    type: router
+    interfaces:
+      - network: r2_core
+        ip: 10.0.25.2/30
+      - network: r3_core
+        ip: 10.0.35.2/30
+      - network: r4_core
+        ip: 10.0.45.2/30
+      - network: dmz_servers
+        ip: 10.30.1.1/24
+      - network: lan_attackers
+        ip: 10.20.1.1/24
+    frr:
+      enabled: true
+      protocol: ospf
+      router_id: 5.5.5.5
+      area: 0
