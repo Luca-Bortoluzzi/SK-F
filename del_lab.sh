@@ -16,7 +16,7 @@ if [ "$LAB_NAME" = "all" ]; then
     sudo rm -rf ./labs/*
 elif [ -d "$LAB_NAME" ]; then
     echo "Remove lab: $LAB_NAME..."
-    # Rimuove in modo sicuro
+    # Remove the lab safely
     sudo rm -rf "$LAB_NAME"
 else
     echo "Error: directory does not exist or command not right"

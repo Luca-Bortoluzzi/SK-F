@@ -480,11 +480,12 @@ def copy_node_directories(
     nodes: dict[str, Any],
     enabled: bool,
 ) -> list[str]:
-    """Copia nel lab le cartelle configs/<node_name>/ quando richiesto.
+    """Merge matching node directories beside the YAML into the generated lab.
 
-    Example: if the YAML file is configs/test.yml and --import-node-dirs is
-    passed, configs/pc_a/ is copied to labs/<lab_name>/pc_a/. In Kathara these
-    files are available in the node container as /hostlab/<file>.
+    With --import-dirs, configs/pc_a/ is copied to labs/<lab_name>/pc_a/.
+    A lab-root mount exposes those files as /hostlab/pc_a/<file>. Generated
+    FRR files are written after this copy and may replace imported FRR files.
+    See docs/configuration.md for the import and generation order.
     """
     if not enabled:
         return []

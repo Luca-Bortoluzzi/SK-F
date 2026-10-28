@@ -10,13 +10,16 @@ Interactive usage:
     ./run_connection_tests.py
 
 Non-interactive usage:
-    ./run_connection_tests.py --lab Test1 --target server --port 9000 \
+    ./run_connection_tests.py --lab dos_lab --target server --port 9000 \
         --scenario baseline --attempts 10 --timeout 2 --delay 1 --non-interactive
 
 Output:
 - results/<lab>/simulation_<number>/connection_results_<scenario>.csv
 - logs/<lab>/simulation_<number>/connection_tests_<scenario>.log
 - logs/<lab>/<client>/simulation_<number>/<scenario>.log
+
+The lab and service must already be running. See docs/running-experiments.md
+for setup and docs/results.md for metric definitions and CSV columns.
 """
 
 from __future__ import annotations
