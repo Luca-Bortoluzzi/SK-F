@@ -2,323 +2,269 @@
 
 [Back to README](../README.md) · [Example catalog](../configs/README.md)
 
+An SK-F file describes a Katharà lab in YAML with a closed vocabulary: every
+allowed key is listed in [`src_gen_lab/dictionary.yml`](../src_gen_lab/dictionary.yml)
+and summarized here. Any other key is an error.
+
 ## Generate or validate a lab
 
 ```bash
 python3 generate_lab.py Test1 --validate-only
-python3 generate_lab.py configs/Test1.yml --wireshark disabled
+python3 generate_lab.py configs/Test1.yml
 ```
 
-A positional argument can be an existing path or a configuration name. Names are
-searched as `<name>.yml`, then `<name>.yaml`, under `configs/` by default. Output
-goes to `labs/<lab_name>/`, relative to the current working directory.
+The argument is a YAML path or a configuration name, searched as `<name>.yml`
+then `<name>.yaml` under `configs/`. Output goes to `labs/<lab.name>/`.
 
 | Option | Behavior |
 | --- | --- |
-| `--config-dir PATH` | Search directory for configuration names; default `configs` |
-| `--output-dir PATH`, `-o PATH` | Parent directory for the generated lab; default `labs` |
-| `--validate-only` | Load and validate the configuration without creating or changing a lab |
-| `--import-dirs` | Copy matching node directories next to the YAML into the lab |
-| `--force` | Overwrite generated files and merge imported files into an existing lab; unrelated old files remain |
-| `--clean` | Delete the entire existing output lab directory and regenerate it |
-| `--wireshark ask\|enabled\|disabled` | Control interactive capture selection; default `ask`; see precedence below |
-| `--wireshark-networks SELECTION` | Explicit capture-network selection |
-| `--zombies manual\|disabled` | Optionally write a controller's `zombies.txt`; default `disabled` |
-| `--zombies-node NODE` | Node directory receiving that address list |
-| `--zombies-ips LIST` | Addresses for manual mode; accepts spaces, commas, semicolons, and optional CIDR suffixes |
+| `--config-dir PATH` | Where configuration names are looked up; default `configs` |
+| `--output-dir PATH`, `-o PATH` | Parent directory of the generated lab; default `labs` |
+| `--validate-only` | Check the file and stop |
+| `--force` (alias `--clean`) | Replace an existing lab folder |
+| `--capture SELECTION` (alias `--wireshark-networks`) | Capture networks, overriding the `capture` section: names separated by commas, `node:<name>`, `all`, or `none` |
+| `--zombies manual` | Write `zombies.txt` for the C2 node from `--zombies-ips` |
+| `--zombies-node NODE` | Node receiving `zombies.txt`; default the node with role `attacker` |
+| `--zombies-ips LIST` | Zombie addresses, separated by commas or spaces |
 
-Stop a running lab before regenerating it. `--clean` also removes its `shared/`
-files and any manual changes; saved results outside the lab directory remain.
-Without `--force` or `--clean`, generation refuses an existing lab directory.
-Validation errors prevent generation, but a later generation failure can leave
-partial output; generation is not transactional.
+The lab is generated in a temporary folder and swapped in only when complete, so
+a failure never leaves a partial lab. Replacing a lab removes its `shared/`
+files; results saved by the tools live outside the lab folder. Stop a running
+lab before regenerating it.
+
+## Principles
+
+1. **Closed vocabulary.** An unknown key is an error, with a suggestion:
+   `unknown key 'gatway': did you mean 'gateway'?`.
+2. **One form per concept.** Each thing is written in one way.
+3. **No key without effect.** Every key in the dictionary is used by the generator.
+4. **The framework derives what it can.** Router IDs, BGP neighbors, gateways and
+   redistribution come from the topology.
+5. **An escape hatch.** `frr_config` replaces the generated `frr.conf` for cases
+   the dictionary does not cover.
 
 ## Minimal complete topology
 
-Save this as `configs/my_lab.yml`:
-
 ```yaml
-lab_name: my_lab
-description: Two hosts connected through a router
+lab:
+  name: my_lab
+  description: Two hosts connected through a router
+
 nodes:
   pc_a:
-    type: host
-    interfaces:
-      - network: lan_a
-        ip: 10.50.1.10/24
-    default_gateway: 10.50.1.1
-  router:
+    interfaces: [{network: lan_a, ip: 10.50.1.10/24}]
+  r1:
     type: router
     interfaces:
-      - network: lan_a
-        ip: 10.50.1.1/24
-      - network: lan_b
-        ip: 10.50.2.1/24
+      - {network: lan_a, ip: 10.50.1.1/24}
+      - {network: lan_b, ip: 10.50.2.1/24}
   pc_b:
-    type: host
-    interfaces:
-      - network: lan_b
-        ip: 10.50.2.10/24
-    default_gateway: 10.50.2.1
+    interfaces: [{network: lan_b, ip: 10.50.2.10/24}]
 ```
 
-```bash
-python3 generate_lab.py my_lab --validate-only
-python3 generate_lab.py my_lab --wireshark disabled
-bash start.sh labs/my_lab
-```
+The hosts need no `gateway`: each LAN has a single router, so it is derived.
+`network` names collision domains: interfaces with the same name are connected
+together. Interface order gives `eth0`, `eth1`, and so on.
 
-`network` names identify shared Ethernet collision domains: interfaces with the
-same name are connected together. They are not IP prefixes. Interface order
-determines `eth0`, `eth1`, and so on.
+## Value types
 
-## Top-level and node fields
+| Type | Format | Example |
+| --- | --- | --- |
+| `name` | letter or digit first, then letters, digits, `_`, `.`, `-` | `r1`, `lan_a` |
+| `cidr` | IPv4 address/prefix | `10.0.1.10/24` |
+| `ip` | IPv4 address without prefix | `10.0.1.1` |
+| `subnet` | network/prefix, no host bits | `10.0.1.0/24` |
+| `asn` | integer 1–4294967295 | `65001` |
+| `area` | integer or dotted notation | `0`, `10`, `0.0.0.10` |
+| `protocols` | `ospf`, `rip`, `bgp`, or a list | `ospf`, `[ospf, bgp]` |
+| `path` | path relative to the YAML file | `server/` |
+| `text` | string; quote numbers | `"2.0"` |
 
-| Field | Meaning |
-| --- | --- |
-| `lab_name` | Required output directory name; use a simple name such as `my_lab` |
-| `nodes` | Required, nonempty mapping of node names to definitions |
-| `description` | Fallback description for `lab.conf` |
-| `metadata` | Optional `description`, `version`, `author`, `email`, and `web` values for `lab.conf` |
-| `wireshark` | Optional capture settings described below |
+A value of the wrong type is an error. Text keys need quotes around values YAML
+would read as numbers: `version: "2.0"`, not `version: 2.0`.
 
-Node names and network names must start with a letter or digit and otherwise
-contain only letters, digits, `.`, `_`, or `-`.
+## Sections
 
-| Node field | Meaning |
-| --- | --- |
-| `type` | `host` (default), `router`, `switch`, or `firewall` |
-| `image` | Explicit container image; overrides image selection |
-| `interfaces` | Required nonempty list; each item needs `network` and may have `ip` in CIDR notation |
-| `default_gateway` | Default route through an address on a local interface subnet |
-| `routes` | List of static routes, each with `to` and `via` |
-| `commands` | List of shell commands appended to the startup file, in order |
-| `frr` | FRR configuration mapping described below |
+The file has two required sections, `lab` and `nodes`, and an optional `capture`.
 
-Example additions to a node definition:
+**`lab`**: `name` (required, `name`; also the output folder), `description`,
+`version`, `author`, `email`, `web` (all `text`, written to the `LAB_*` lines of
+`lab.conf`; missing ones are not written).
+
+**`capture`**: `networks` (required, list of `name`): the generator adds a
+Wireshark node attached to those networks and publishes its GUI on
+`http://localhost:3000`. Without the section there is no capture. `--capture`
+overrides it. Do not name a node `wireshark` when capturing.
+
+### Node
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `type` | `host` \| `router` | `host` | `router` enables IP forwarding and FRR |
+| `interfaces` | list of interfaces | required | at least one |
+| `image` | `text` | `kathara/base` for hosts, `kathara/frr` for routers | Docker image |
+| `gateway` | `ip` | derived when the LAN has a single router | default route |
+| `routes` | list of `{to: subnet, via: ip}` | none | static routes |
+| `files` | `path` | none | folder copied into the root of the container |
+| `startup` | list of `text` | none | commands run at startup, after the network |
+| `roles` | list of `name` | none | roles for the measurement tools, e.g. `[server]`; written to `roles.conf` |
+| `kathara` | section | none | native machine options, below |
+| `routing` | `protocols` | none | routers only, see Routing |
+| `asn` | `asn` | none | routers with BGP only |
+| `frr_config` | `text` | none | routers only: hand-written `frr.conf` |
+
+A server is a host: what makes it a server is `files`, `startup` and `roles`.
 
 ```yaml
-routes:
-  - to: 10.60.0.0/16
-    via: 10.50.1.1
-commands:
-  - "python3 /hostlab/server/service.py > /tmp/service.log 2>&1 &"
+srv_web:
+  interfaces: [{network: lan_srv, ip: 10.30.2.10/24}]
+  files: srv_web/
+  startup:
+    - python3 /service.py > /tmp/service.log 2>&1 &
+  roles: [server]
 ```
 
-Commands run inside the node after its address configuration, routes, and FRR
-startup. Background long-running services with `&` so startup can finish. Quote
-commands containing YAML-sensitive punctuation such as `: `.
+`files: srv_web/` copies `srv_web/` (next to the YAML) into the node folder of
+the lab. Katharà copies that folder into the container root at startup, so
+`srv_web/service.py` becomes `/service.py`; the lab folder is also mounted as
+`/hostlab`. Python caches, `.git` and `.DS_Store` are skipped. Background
+long-running commands with `&` so startup can finish.
 
-The `router`, `switch`, and `firewall` types select the FRR image and generate FRR
-files. They do not automatically create an Ethernet bridge or install firewall
-rules. A host with an enabled, nonempty `frr` section also uses FRR. The generator
-starts FRR with `systemctl start frr`; it does not emit an IPv4 forwarding command.
-Custom routing images must provide the required forwarding and FRR setup.
+**`kathara`** options are written to `lab.conf` with Katharà's names:
+`mem` (text, `256m`), `cpus` (number, `0.5`), `ipv6` (bool), `sysctl` (list,
+`net.ipv4.tcp_syncookies=1`), `env` (list, `MODE=test`), `ports` (list,
+`"8080:80/tcp"`), `bridged` (bool), `num_terms` (integer).
 
-Use IPv4 for the supplied experiments: the services, agents, and TCP measurement
-client use IPv4 sockets. The validator accepting an IPv6 address does not imply
-that the experiment pipeline supports IPv6.
+### Interface
 
-## FRRouting
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `network` | `name` | required | collision domain |
+| `ip` | `cidr` | none | without `ip` the interface is connected but not configured |
+| `routing` | `protocols` | all the node's protocols | routers only: protocols running here |
+| `area` | `area` | `0` | routers with OSPF only |
 
-Set `frr.protocol: ospf`, `rip`, or `bgp` for one protocol, or use
-`frr.protocols: [ospf, bgp]` for several. Protocols are also enabled by direct
-sections such as `frr.ospf: {}`, a mapping under `frr.protocols`, or daemon flags
-such as `frr.daemons: {ospfd: true}`.
+## Routing
 
-Protocol-specific settings can live under `frr.protocols.<protocol>` or
-`frr.<protocol>`. If both exist, values in the direct section take precedence.
-Use one form consistently. Do not rely on `frr.enabled: false` to disable FRR on
-a `router`, `switch`, or `firewall`: those types are always treated as FRR devices
-by generation, while semantic validation skips the disabled section.
+Routing is described by three keys: `routing` (on the node and, when needed, on
+the interface), `area` and `asn`.
 
-### OSPF
+- `routing` on the node: the protocols the router uses.
+- `routing` on an interface: which of those run there. Only needed when the
+  node uses more than one protocol.
+- `area` on an interface: its OSPF area, default 0.
+- `asn` on the node: the AS number, required with BGP.
+
+iBGP and eBGP are not declared: two routers with the same `asn` form an iBGP
+session, with different `asn` an eBGP session.
 
 ```yaml
-frr:
-  protocol: ospf
-  router_id: 1.1.1.1
-  area: 0
+# OSPF multi-area
+r1:
+  type: router
+  routing: ospf
+  interfaces:
+    - {network: lan_a, ip: 10.10.1.1/24, area: 10}
+    - {network: r1_r2, ip: 10.0.12.1/30}
+
+# BGP
+r2:
+  type: router
+  routing: bgp
+  asn: 65002
+  interfaces:
+    - {network: r1_r2, ip: 10.0.12.2/30}
+    - {network: r2_r3, ip: 10.0.23.1/30}
+
+# OSPF inside, BGP towards the outside
+a1:
+  type: router
+  routing: [ospf, bgp]
+  asn: 65010
+  interfaces:
+    - {network: a_core, ip: 10.1.0.1/30}
+    - {network: wan,    ip: 10.255.0.1/30, routing: bgp}
 ```
 
-With no interface area markers, all addressed interface networks are advertised
-in `frr.area` (default `0`), or the explicit `frr.networks` list is used. To choose
-areas per interface, add `ospf_area`:
+## Automatic behavior
 
-```yaml
-interfaces:
-  - network: lan_a
-    ip: 10.50.1.1/24
-    ospf_area: 10
-  - network: backbone
-    ip: 10.0.12.1/30
-    ospf_area: 0
-frr:
-  protocol: ospf
-  router_id: 1.1.1.1
-  ospf:
-    areas:
-      - id: 10
-        type: stub
-        no_summary: true
-    redistribute: [connected]
-```
+**Nodes:** `type` is `host` when missing; the image comes from the type; a host
+without `gateway` uses the only router of its LANs.
 
-Once any addressed interface has `ospf_area`, only marked interfaces contribute
-generated OSPF network statements. Area types `stub` and `nssa` are emitted;
-`no_summary` or `totally_stub` appends `no-summary`. `frr.ospf.router_id` overrides
-the common ID. Use interface markers or `frr.networks`; the generator does not
-consume `frr.ospf.networks`, although the validator inspects it.
+**Routers:** IP forwarding is enabled (`net.ipv4.ip_forward=1` in `lab.conf`);
+FRR is started with `systemctl start frr` and only the daemons of `routing` are
+enabled; router IDs are assigned in order of router name from
+`settings.router_id_pool` in the dictionary (default `10.255.255.0/24`, which
+must not overlap the lab); each protocol announces the networks of the
+interfaces where it runs.
 
-### RIP
+**BGP:** neighbors are the BGP routers on shared networks, on interfaces where
+BGP runs; their address and AS come from their node. When every router of an AS
+also runs OSPF, the routers of that AS form an iBGP full mesh over loopback
+addresses (the router IDs, announced in OSPF), and border routers use
+`next-hop-self`. Otherwise routers of the same AS must be directly connected.
+`no bgp ebgp-requires-policy` lets eBGP routes pass without policies.
 
-```yaml
-frr:
-  protocol: rip
-  rip:
-    version: 2
-    auto_summary: false
-    redistribute: [connected]
-```
+**Redistribution:** on a router with more than one protocol, the routes of each
+are redistributed into the others. Redistributed routes are tagged and tagged
+routes are never redistributed again, so a route crosses protocols at most once
+and cannot loop back into the domain it came from.
 
-Mark interfaces with `rip: true` to select their networks. If none are marked,
-generation falls back to `frr.networks` or all addressed interfaces.
-`frr.rip.networks` overrides that selection. Version defaults to 2; automatic
-summary is disabled by default.
+## Validation
 
-### BGP
+The Lexer and the Parser report every problem at once, with line and column.
+Errors block generation; warnings do not.
 
-```yaml
-frr:
-  protocol: bgp
-  router_id: 1.1.1.1
-  bgp:
-    asn: 65001
-    neighbors:
-      - ip: 10.0.12.2
-        remote_as: 65002
-    networks: [10.50.1.0/24]
-    redistribute: [connected]
-```
+| # | Rule | Result |
+| --- | --- | --- |
+| 1 | Key not in the dictionary | error, with suggestion |
+| 2 | Key repeated in the same section | error |
+| 3 | Value of the wrong type | error |
+| 4 | Invalid node or network name | error |
+| 5 | Same IP on two interfaces | error |
+| 6 | IP equal to the network or broadcast address | error |
+| 7 | Interfaces of the same network with different subnets | error |
+| 8 | Subnets of different networks overlapping (or overlapping the router ID pool) | error |
+| 9 | Network with a single node | warning |
+| 10 | `gateway` outside every local subnet | error |
+| 11 | Host without `gateway` on LANs with more than one router | error |
+| 12 | Static route with `via` outside every local subnet | error |
+| 13 | Router with a single interface | warning |
+| 14 | `routing`, `area`, `asn` or `frr_config` on a host | error |
+| 15 | Interface `routing` with a protocol the node does not use | error |
+| 16 | `area` on an interface where OSPF does not run | error |
+| 17 | `asn` without `bgp` in `routing`, or `bgp` without `asn` | error |
+| 18 | Two routers on the same network with different areas | error |
+| 19 | Area other than 0 with no router connecting it to area 0 | error |
+| 20 | Routers of the same AS not directly connected and without OSPF | error |
+| 21 | Routers redistributing between the same two protocols in the same domains | warning |
+| 22 | `area` or `asn` together with `frr_config` | error: write the routing in `frr_config` |
+| 23 | `files` folder missing | error |
 
-Declare the peer as a node with its own BGP ASN and matching addresses.
-`asn`, `neighbors`, and `networks` can also live directly under `frr` for the
-legacy form used by `multi_AS.yml`. Unlike OSPF and RIP, BGP does not implicitly
-advertise all interface networks. By default, generated configuration disables
-`ebgp-requires-policy` and `network import-check`; set `ebgp_requires_policy` or
-`network_import_check` to `true` in the BGP section to omit those disabling lines.
+Keys of the previous syntax (`lab_name`, `metadata`, `frr`, `default_gateway`,
+`commands`, `ospf_area`, `wireshark`, `services`, ...) are reported with what
+replaces them. Each router with more than one protocol is listed in a note with
+the protocols of each interface.
 
-### Custom FRR configuration
+A successful report does not check container images, command syntax or FRR
+convergence: inspect the generated files and test connectivity when adding a
+topology.
 
-`frr.config` replaces the generated `frr.conf` text. Declare the needed protocols
-as well: daemon enablement is still generated separately. Imported
-`etc/frr/daemons`, `frr.conf`, and `vtysh.conf` are overwritten by generation for
-FRR devices. The validator does not parse custom FRR text.
+## Outside the dictionary
 
-## Import node files
-
-With `--import-dirs`, a directory next to the YAML with the same name as a node is
-merged into that node's generated directory:
-
-```text
-configs/server/service.py       -> labs/dos_lab/server/service.py
-configs/server/server_metrics.py -> labs/dos_lab/server/server_metrics.py
-```
-
-No matching directory is required for a node. Directories with names absent from
-the YAML are skipped with a warning. Python caches, `.git`, and `.DS_Store` are
-excluded. Runtime scripts should use paths appropriate to the lab mount, such as
-`/hostlab/server/service.py` for the generated `server/service.py` file. The
-simulator also searches alternative locations when starting services and agents.
-Its temporary remote scripts and service metrics require the lab's `shared/`
-directory to be available inside containers as `/shared`.
-
-Katharà also copies the node directory's contents into the node filesystem at
-startup: `server/service.py` becomes `/service.py` on the server, and
-`r1/etc/frr/frr.conf` becomes `/etc/frr/frr.conf` on `r1`. See the
-[directory manual](https://www.kathara.org/man-pages/kathara-lab-dirs.7.html).
-
-`services` declarations, including the one in `multi-area.yml`, are not consumed
-by this generator. Use `commands` to start an imported service. The YAML's
-`simulation` and `connection_tests` sections supply targets/clients for semantic
-checks; they do **not** configure `simulate.sh` or `run_connection_tests.py`.
-Pass experiment settings explicitly on the command line.
-
-For an attacker/zombie topology, declare a target that exists in the lab:
-
-```yaml
-simulation:
-  enabled: true
-  target_node: server
-```
-
-Alternatively use `target_ip`. Equivalent target-reference checks exist for
-`connection_tests`, `attack`, and `dos` sections and supported top-level target
-keys. These declarations do not launch traffic.
-
-## Wireshark
-
-Attach capture to networks, not directly to a router. For example:
-
-```bash
-python3 generate_lab.py multi_AS --wireshark-networks node:r1
-```
-
-Selections accept a comma-separated list of collision-domain names, menu indices
-(starting at 1), `node:<name>` for all of a node's networks, or `all`. `0` selects
-none. The equivalent YAML selection is:
-
-```yaml
-wireshark:
-  enabled: true
-  networks: [lan_a, r1_r2]
-```
-
-Selection precedence is: explicit `--wireshark-networks`, then YAML settings,
-then the interactive mode. Consequently, **`--wireshark disabled` does not
-override networks explicitly configured in YAML**; use `--wireshark-networks 0`
-to force no capture. `ask` prompts whether to enable capture; `enabled` skips
-that question and asks for networks. Without a terminal, either mode adds no
-capture unless a CLI or YAML selection is supplied.
-
-The generator adds a `wireshark` node, bridges it, and publishes host TCP port
-3000. It prints `http://localhost:3000` as the GUI address; access and authentication
-depend on the installed image version. The image is not pinned. See Katharà's
-[capture tutorial](https://github.com/KatharaFramework/Kathara/wiki/Capture-Packets-using-Wireshark-GUI)
-for the network attachment model. Avoid a user-defined node named `wireshark`
-when enabling integration, and ensure port 3000 is available.
+Use `frr_config` for: OSPF stub/NSSA areas, link costs, passive interfaces;
+hand-picked redistribution, filters and route-maps; hand-picked BGP neighbors,
+peers outside the lab, multihop sessions; a router in several AS (`local-as`).
+`frr_config` needs `routing` to know which daemons to start.
 
 ## Controller address lists
 
-The generator does not automatically discover zombie IPs. To write the list:
+`simulate.sh` discovers `zombie*` nodes and rewrites the attacker's
+`zombies.txt` before every run. To write the list at generation time instead:
 
 ```bash
-python3 generate_lab.py dos_lab --import-dirs --wireshark disabled \
-  --zombies manual --zombies-node attacker \
-  --zombies-ips '10.20.1.11,10.20.1.12,10.20.1.13'
+python3 generate_lab.py dos_lab --zombies manual --zombies-ips '10.20.1.11,10.20.1.12,10.20.1.13'
 ```
 
-This writes `labs/dos_lab/attacker/zombies.txt`. Manual mode without addresses
-prompts in a terminal and fails without one. Even with addresses, manual mode
-can prompt for the controller node in a terminal unless `--zombies-node` is set.
-`--zombies-ips` alone has no effect while mode remains `disabled`.
-
-For automated experiments, `simulate.sh` discovers `zombie*` nodes and rewrites
-the generated attacker's list before execution, including baseline runs. It uses
-each node's first configured IP. Manual list generation is unnecessary for that
-workflow; `--zombies disabled` does not prevent a list being imported from a node
-directory.
-
-## Validation boundaries
-
-Validation checks required structure, node and network names, supported types,
-IP uniqueness, host addresses, subnet consistency and overlap, gateway subnet
-membership, explicit router-forwarding disablement, routing IDs, BGP peer ASNs,
-OSPF network declarations, and experiment target/client references. Warnings
-cover isolated networks, one-interface routers, nonreciprocal BGP neighbors, and
-skipped import directories.
-
-A successful report does not verify container images, command syntax, service
-files, all static-route fields, FRR convergence, or application availability.
-Unknown fields are not rejected as a complete schema would reject them. Inspect
-the generated files and test connectivity when adding a topology.
+This writes `labs/dos_lab/attacker/zombies.txt` (the node with role `attacker`,
+or `--zombies-node`).

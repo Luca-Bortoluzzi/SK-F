@@ -4,7 +4,7 @@
 
 Complete the [setup](../README.md#setup), activate the Python environment, and
 run commands from the repository root. Generate the selected lab with
-`--import-dirs` before invoking the simulator.
+`python3 generate_lab.py <lab>` before invoking the simulator.
 
 ## Automated workflow
 

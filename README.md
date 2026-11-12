@@ -78,16 +78,15 @@ Client and service images must contain Python 3; clients also need `ping`.
 
 ## First experiment
 
-Validate and generate the supplied lab. `--import-dirs` includes the application
-and load-agent files stored next to the YAML configuration.
+Validate and generate the supplied lab. The nodes' `files` keys include the
+application and load-agent files stored next to the YAML configuration.
 
 ```bash
-python3 generate_lab.py dos_lab --import-dirs --validate-only
-python3 generate_lab.py dos_lab --import-dirs --wireshark disabled
+python3 generate_lab.py dos_lab --validate-only
+python3 generate_lab.py dos_lab
 ```
 
-This creates `labs/dos_lab/`. A warning that the `proxy` directory is skipped is
-expected: this topology has no proxy node.
+This creates `labs/dos_lab/`.
 
 Preview the workflow, then run a baseline with no generated attack traffic:
 
@@ -114,24 +113,23 @@ is named `dos` in filenames even though the command-line mode is `attack`.
 To compare the mitigation topology:
 
 ```bash
-python3 generate_lab.py mitigation --import-dirs --wireshark disabled
+python3 generate_lab.py mitigation
 ./simulate.sh mitigation full --target proxy --server server --plot
 ```
 
-Pass **`--target proxy`** for this topology. The YAML's `simulation.target_node`
-is validated but is not read by the simulator. Its default target is `server`,
-which is on the private backend network in this lab.
+Pass **`--target proxy`** for this topology. The simulator's default target is
+`server`, which is on the private backend network in this lab.
 
 ## Working with a network manually
 
 For a small routing example without the experiment runner:
 
 ```bash
-python3 generate_lab.py Test1 --wireshark disabled
+python3 generate_lab.py Test1
 bash start.sh labs/test
 ```
 
-The output directory uses the YAML's `lab_name`, which is `test` in this example.
+The output directory uses the YAML's `lab.name`, which is `test` in this example.
 To inspect a node, open a terminal in the generated directory:
 
 ```bash

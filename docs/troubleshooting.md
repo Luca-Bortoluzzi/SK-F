@@ -5,7 +5,7 @@
 Start with local validation and an execution preview:
 
 ```bash
-python3 generate_lab.py dos_lab --import-dirs --validate-only
+python3 generate_lab.py dos_lab --validate-only
 ./simulate.sh dos_lab baseline --dry-run
 ```
 
@@ -24,17 +24,18 @@ container images, live routes, or service availability.
 | Docker daemon or socket permission error | Verify `docker ps` works as the same user. Check Docker installation/service and user access using the official installation instructions. |
 | `start.sh` cannot open terminal windows | Configure an available terminal in Katharà, or run `kathara lstart --noterminals` from the generated lab directory. The simulator already uses this headless mode. |
 | Configuration not found | Use a filename stem with its exact case, such as `multi_AS`, or pass `configs/multi_AS.yml`. |
-| Lab directory already exists | Stop it, then choose `--force` to merge/overwrite or `--clean` to delete and regenerate. |
-| Lab not found after generation | Look at YAML `lab_name`, not just its filename: `Test1` creates `labs/test`, and `multi-area` creates `labs/Test1_multi_area`. |
+| Lab directory already exists | Stop it, then use `--force` to replace it. |
+| Lab not found after generation | Look at YAML `lab.name`, not just its filename: `Test1` creates `labs/test`, and `multi-area` creates `labs/Test1_multi_area`. |
 | `client-router-server` fails validation | This is an unfinished placeholder with no nodes; choose a populated example. |
-| A directory import is skipped | Its name does not match a node in this topology. This is expected for `configs/proxy/` when generating `dos_lab`. |
+| `'lab_name' belongs to the previous syntax` | The file uses the old syntax; the message says what replaces each key. See the [configuration reference](configuration.md). |
 
 ## Missing service or load files
 
-The experiment labs need `--import-dirs`. To regenerate an existing stopped lab:
+The experiment labs copy these files through the nodes' `files` keys. To
+regenerate an existing stopped lab:
 
 ```bash
-python3 generate_lab.py dos_lab --import-dirs --force --wireshark disabled
+python3 generate_lab.py dos_lab --force
 ```
 
 Check that `labs/dos_lab/server/service.py`, its sibling `server_metrics.py`,
@@ -46,8 +47,7 @@ Some `dos_lab` zombie startup commands use `/hostlab/zombie.py`; with a lab-root
 mount, the file is instead under `/hostlab/zombie_1/zombie.py` (and similarly for
 other agents). The simulator searches these node-specific paths and starts the
 agents when needed. For a manual startup workflow, use the correct path in each
-node's YAML `commands`. The `multi-area` example's `services` declaration is not
-implemented by the generator; add a startup command before testing its service.
+node's YAML `startup`.
 
 ## Routes and mitigation
 
@@ -108,7 +108,7 @@ is mounted, and the shell command can execute. For slow container startup, tune
 | No container resource statistics | Check Docker access, server container discovery, and whether `server_container_metrics.csv` has data beyond its header. |
 | Latest report shows the wrong lab | The report searches all connection CSVs under the current `results/` by modification time. Supply the exact path. |
 | Plot generation fails | Install Matplotlib in the active environment. On a headless host, run with `MPLBACKEND=Agg`. |
-| Wireshark is present despite `--wireshark disabled` | A YAML network selection takes precedence. Use `--wireshark-networks 0`. |
+| Wireshark is present | The YAML has a `capture` section. Use `--capture none` to generate without it. |
 | Wireshark GUI unavailable | Check that its container started, host port 3000 is free, and the installed image's access requirements. |
 
 To stop a retained lab, return to the repository root and run

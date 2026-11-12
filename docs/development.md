@@ -7,9 +7,12 @@
 | File or directory | Responsibility |
 | --- | --- |
 | `generate_lab.py` | Thin command-line entry point for the generator |
-| `src_gen_lab/Lexer.py` | Resolve configuration paths and load YAML with `safe_load` |
-| `src_gen_lab/Parser.py` | Validate required structure and collect semantic errors/warnings |
-| `src_gen_lab/gen_lab.py` | Render `lab.conf`, startup scripts, FRR files, node imports, Wireshark, and optional zombie address lists |
+| `src_gen_lab/dictionary.yml` | The syntax dictionary: value types, sections and their keys, legacy keys, settings |
+| `src_gen_lab/loader.py` | Load and check the dictionary |
+| `src_gen_lab/Lexer.py` | Lexical check: YAML syntax, repeated keys, unknown words, names, malformed addresses; builds the token tree |
+| `src_gen_lab/Parser.py` | Syntax and structure from the dictionary, then the lab model, semantic rules, and derived values |
+| `src_gen_lab/gen_lab.py` | Translator and CLI: render `lab.conf`, startup scripts, FRR files, node files, Wireshark, roles, and zombie lists |
+| `src_gen_lab/issues.py` | Errors, warnings and notes with their position in the file |
 | `configs/` | Source topology definitions and per-node runtime files |
 | `start.sh`, `stop.sh`, `del_lab.sh` | Start, clean up, and delete generated labs |
 | `simulate.sh` | Coordinate a lab experiment and collect server/container metrics |
@@ -27,31 +30,36 @@ use the Python standard library.
 
 ## Generation pipeline
 
-The CLI resolves a YAML path, loads a mapping, checks its structure, and prints a
-semantic report. `--validate-only` stops there. Otherwise, `generate_lab()` checks
-the configuration again, selects capture networks, prepares the output directory,
-and writes files in this order:
+1. `loader.py` reads `dictionary.yml` and checks that it is consistent.
+2. `Lexer.py` reads the lab file into a token tree with positions. It reports
+   YAML errors, repeated keys, words not in the dictionary (with a suggestion),
+   keys of the previous syntax, invalid user names and malformed addresses, and
+   classifies every value into the dictionary types it belongs to.
+3. `Parser.py` checks where each key may appear, required keys, shapes and value
+   types against the dictionary. Without errors, it builds the model (`Lab`,
+   `Node`, `Interface`), applies the semantic rules and computes every derived
+   value once: gateways, router IDs, loopbacks, BGP neighbors, redistribution.
+4. `gen_lab.py` renders the model into a temporary folder and swaps it in.
 
-1. `lab.conf` with metadata, interface-to-network assignments, and images.
-2. Imported node directories, if requested.
-3. An optional manually supplied `zombies.txt`.
-4. `<node>.startup` files and `etc/frr/` files for FRR devices.
-5. Removal of obsolete Wireshark helper scripts.
+All findings go to one `IssueReport` and are printed together, in file order.
+`--validate-only` stops after step 3. The vocabulary lives only in
+`dictionary.yml`: adding a key means adding it there and using it in the Parser
+or the translator (principle: no key without effect).
 
-Imported files may be overwritten by later generated FRR files. File generation
-is not atomic. Keep editable source in `configs/`, inspect errors before reusing
-a partial lab, and preserve the distinction between `--force` and `--clean`.
+Files of a node's `files` folder are copied before the generated `etc/frr/`
+files, which replace imported FRR files with the same name.
 
 The generated layout looks like:
 
 ```text
-labs/<lab_name>/
+labs/<lab.name>/
   lab.conf
   <node>.startup
-  <node>/                         # imported files and/or generated FRR files
+  <node>/                         # the node's files and/or generated FRR files
     etc/frr/daemons
     etc/frr/frr.conf
     etc/frr/vtysh.conf
+  roles.conf                      # node roles, when any node declares roles
   shared/                         # created/used by runtime tools
 ```
 
@@ -89,23 +97,23 @@ containers.
 
 ```bash
 python3 generate_lab.py Test1 --validate-only
-python3 generate_lab.py multi-area --import-dirs --validate-only
+python3 generate_lab.py multi-area --validate-only
 python3 generate_lab.py multi_AS --validate-only
-python3 generate_lab.py dos_lab --import-dirs --validate-only
-python3 generate_lab.py mitigation --import-dirs --validate-only
+python3 generate_lab.py dos_lab --validate-only
+python3 generate_lab.py mitigation --validate-only
 for script in simulate.sh start.sh stop.sh del_lab.sh clear_results.sh; do
   bash -n "$script" || break
 done
 ```
 
 `client-router-server.yml` is an unfinished configuration and is expected to fail
-validation. The example catalog records expected import warnings.
+validation.
 
 Generate into a temporary directory to inspect changes without overwriting labs:
 
 ```bash
 docs_lab_dir=$(mktemp -d /tmp/skf-check.XXXXXX)
-python3 generate_lab.py dos_lab --import-dirs --wireshark disabled --output-dir "$docs_lab_dir"
+python3 generate_lab.py dos_lab --output-dir "$docs_lab_dir"
 bash simulate.sh "$docs_lab_dir/dos_lab" full --dry-run
 ```
 
@@ -115,8 +123,6 @@ appropriate baseline or controlled experiment and examine its logs and metrics.
 Avoid simultaneous labs sharing node names, because client/server container
 discovery is not scoped to the lab identifier.
 
-When adding a YAML field, update both validation and generation, and document
-whether it changes runtime behavior. Existing `services`, `simulation`, and
-`connection_tests` declarations illustrate why accepted YAML must not be mistaken
-for implemented execution behavior. When modifying a load script, keep its
+When adding a YAML key, add it to `dictionary.yml`, use it in the Parser or the
+translator, and document it in the configuration reference. When modifying a load script, keep its
 controller/agent argument protocol consistent and update the variant guide.
