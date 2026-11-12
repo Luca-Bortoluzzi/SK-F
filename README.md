@@ -14,9 +14,10 @@ and produces CSV files, text reports, and optional plots.
 - Describe hosts, routers, interfaces, collision domains, static routes, node
   files, and startup commands in YAML with a closed vocabulary: every allowed key
   is listed in a dictionary, and anything else is an error with a suggestion.
-- Write only what cannot be derived: gateways, router IDs, BGP neighbors (with an
-  automatic iBGP full mesh), and redistribution between protocols come from the
-  topology.
+- Describe routing explicitly: OSPF router IDs, areas and area types (stub,
+  totally stub, NSSA), RIP networks, and BGP AS numbers, router IDs, neighbors and
+  announced networks. Gateways, session addresses, and redistribution are derived
+  from the topology.
 - Generate FRRouting (FRR) configuration for OSPF, multi-area OSPF, RIP, BGP, and
   combinations of these protocols.
 - Check addresses, subnets, gateways, and routing consistency before creating
@@ -153,7 +154,7 @@ bash stop.sh labs/test
 | Guide | What it covers |
 | --- | --- |
 | [Example configurations](configs/README.md) | Available topologies, their output names, and sample limitations |
-| [Configuration reference](docs/configuration.md) | YAML syntax, routing, derived values, validation rules, and Wireshark |
+| [Configuration reference](docs/configuration.md) | YAML syntax, OSPF/RIP/BGP sections, derived values, validation rules, and Wireshark |
 | [Running experiments](docs/running-experiments.md) | Simulator options, manual tests, lifecycle, and service settings |
 | [Results and metrics](docs/results.md) | Output files, CSV columns, reports, and interpretation |
 | [Troubleshooting](docs/troubleshooting.md) | Setup failures, routing, missing services, and unexpected results |

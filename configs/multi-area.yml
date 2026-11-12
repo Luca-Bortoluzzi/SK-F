@@ -1,4 +1,5 @@
 # Multi-area OSPF: areas 10, 20 and 30 hang off the backbone (area 0).
+# r1, r2, r3 and r5 are area border routers; r4 is entirely inside area 20.
 # The server folder (server/) is next to this file.
 lab:
   name: Test1_multi_area
@@ -30,42 +31,62 @@ nodes:
 
   r1:
     type: router
-    routing: ospf
     interfaces:
-      - {network: lan_a, ip: 10.10.1.1/24, area: 10}
+      - {network: lan_a, ip: 10.10.1.1/24}
       - {network: r1_r2, ip: 10.0.12.1/30}
       - {network: r1_r3, ip: 10.0.13.1/30}
+    ospf:
+      router_id: 1.1.1.1
+      areas:
+        - {id: 0, networks: [r1_r2, r1_r3]}
+        - {id: 10, networks: [lan_a]}
 
   r2:
     type: router
-    routing: ospf
     interfaces:
-      - {network: lan_b, ip: 10.10.2.1/24, area: 10}
+      - {network: lan_b, ip: 10.10.2.1/24}
       - {network: r1_r2, ip: 10.0.12.2/30}
       - {network: r2_r3, ip: 10.0.23.1/30}
-      - {network: r2_r4, ip: 10.0.24.1/30, area: 20}
+      - {network: r2_r4, ip: 10.0.24.1/30}
+    ospf:
+      router_id: 2.2.2.2
+      areas:
+        - {id: 0, networks: [r1_r2, r2_r3]}
+        - {id: 10, networks: [lan_b]}
+        - {id: 20, networks: [r2_r4]}
 
   r3:
     type: router
-    routing: ospf
     interfaces:
-      - {network: lan_c, ip: 10.10.3.1/24, area: 20}
+      - {network: lan_c, ip: 10.10.3.1/24}
       - {network: r1_r3, ip: 10.0.13.2/30}
       - {network: r2_r3, ip: 10.0.23.2/30}
-      - {network: r3_r4, ip: 10.0.34.1/30, area: 20}
+      - {network: r3_r4, ip: 10.0.34.1/30}
       - {network: r3_r5, ip: 10.0.35.1/30}
+    ospf:
+      router_id: 3.3.3.3
+      areas:
+        - {id: 0, networks: [r1_r3, r2_r3, r3_r5]}
+        - {id: 20, networks: [lan_c, r3_r4]}
 
   r4:
     type: router
-    routing: ospf
     interfaces:
-      - {network: lan_d, ip: 10.10.4.1/24, area: 20}
-      - {network: r2_r4, ip: 10.0.24.2/30, area: 20}
-      - {network: r3_r4, ip: 10.0.34.2/30, area: 20}
+      - {network: lan_d, ip: 10.10.4.1/24}
+      - {network: r2_r4, ip: 10.0.24.2/30}
+      - {network: r3_r4, ip: 10.0.34.2/30}
+    ospf:
+      router_id: 4.4.4.4
+      areas:
+        - {id: 20, networks: [lan_d, r2_r4, r3_r4]}
 
   r5:
     type: router
-    routing: ospf
     interfaces:
-      - {network: dmz,   ip: 10.0.20.1/24, area: 30}
+      - {network: dmz,   ip: 10.0.20.1/24}
       - {network: r3_r5, ip: 10.0.35.2/30}
+    ospf:
+      router_id: 5.5.5.5
+      areas:
+        - {id: 0, networks: [r3_r5]}
+        - {id: 30, networks: [dmz]}

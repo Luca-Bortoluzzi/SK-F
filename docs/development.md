@@ -38,7 +38,8 @@ use the Python standard library.
 3. `Parser.py` checks where each key may appear, required keys, shapes and value
    types against the dictionary. Without errors, it builds the model (`Lab`,
    `Node`, `Interface`), applies the semantic rules and computes every derived
-   value once: gateways, router IDs, loopbacks, BGP neighbors, redistribution.
+   value once: gateways, the interfaces where each protocol runs, BGP session
+   addresses, loopbacks, redistribution.
 4. `gen_lab.py` renders the model into a temporary folder and swaps it in.
 
 All findings go to one `IssueReport` and are printed together, in file order.

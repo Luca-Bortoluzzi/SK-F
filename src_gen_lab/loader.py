@@ -8,7 +8,6 @@ Lexer, the Parser and the translator.
 
 from __future__ import annotations
 
-import ipaddress
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -158,10 +157,6 @@ def _check_references(types: dict[str, ValueType], sections: dict[str, Section])
 def _check_settings(settings: dict[str, Any]) -> None:
     images = settings.get("images")
     _require(isinstance(images, dict) and {"host", "router"} <= set(images), "settings.images needs host and router")
-    try:
-        ipaddress.IPv4Network(str(settings.get("router_id_pool")))
-    except ValueError:
-        raise DictionaryError("dictionary: settings.router_id_pool must be an IPv4 network") from None
     capture = settings.get("capture")
     _require(isinstance(capture, dict) and {"node", "image", "port"} <= set(capture), "settings.capture is incomplete")
 

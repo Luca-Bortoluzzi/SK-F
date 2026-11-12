@@ -68,9 +68,10 @@ kathara exec r1 "vtysh -c 'show bgp summary'"
 Quote the whole command: without quotes, options such as `-c` or `-n` are read
 by `kathara exec` itself and the command fails.
 
-Check matching collision domains, interface addresses, default gateways, and
-the generated `<router>/etc/frr/frr.conf`. Generated router IDs come from
-`settings.router_id_pool` in `src_gen_lab/dictionary.yml`. Increase `--startup-wait` or `--routing-timeout`
+Check matching collision domains, interface addresses, default gateways, the
+networks listed in each router's `ospf`, `rip` and `bgp` sections, and the
+generated `<router>/etc/frr/frr.conf`. A network in `bgp.networks` is announced
+only when the router has a route to it. Increase `--startup-wait` or `--routing-timeout`
 when the configuration is correct but convergence is slow. ICMP filtering also
 prevents the simulator from passing its readiness check.
 

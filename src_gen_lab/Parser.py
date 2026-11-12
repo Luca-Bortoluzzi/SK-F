@@ -9,10 +9,11 @@ The Parser receives the token tree built by the Lexer and works in two phases.
    the right type (validator rule 3).
 
 2. Semantics: the lab is turned into a model (``Lab``, ``Node``,
-   ``Interface``) and checked against the remaining validator rules (5-23).
+   ``Interface``) and checked against the remaining validator rules.
    Everything the framework derives by itself is computed here, once:
-   default gateways, router IDs, loopbacks, BGP neighbors and redistribution.
-   The translator only renders the model.
+   default gateways, the interfaces where each protocol runs, BGP session
+   addresses, loopbacks and redistribution. The translator only renders the
+   model.
 """
 
 from __future__ import annotations
@@ -67,7 +68,7 @@ class BgpNeighbor:
     remote_as: int
     peer: str
     internal: bool  # iBGP (same AS)
-    via_loopback: bool = False
+    update_source: IPv4Address | None = None  # iBGP over OSPF: own router ID as source
     next_hop_self: bool = False
 
 
@@ -84,12 +85,18 @@ class Node:
     startup: list[str] = field(default_factory=list)
     roles: list[str] = field(default_factory=list)
     kathara: dict[str, Any] = field(default_factory=dict)
-    routing: list[str] = field(default_factory=list)
-    asn: int | None = None
     frr_config: str | None = None
+    ospf: dict[str, Any] | None = None  # the node's sections, as written
+    rip: dict[str, Any] | None = None
+    bgp: dict[str, Any] | None = None
     # Derived by the Parser
-    router_id: IPv4Address | None = None
-    loopback: IPv4Address | None = None
+    routing: list[str] = field(default_factory=list)  # protocols with a section, in ospf, rip, bgp order
+    asn: int | None = None
+    ospf_router_id: IPv4Address | None = None
+    bgp_router_id: IPv4Address | None = None
+    ospf_areas: list[tuple[int | str, str]] = field(default_factory=list)  # (area, type)
+    bgp_networks: list[IPv4Network] = field(default_factory=list)
+    loopback: IPv4Address | None = None  # address added to lo and announced in OSPF
     bgp_neighbors: list[BgpNeighbor] = field(default_factory=list)
     redistribute: dict[str, list[str]] = field(default_factory=dict)
 
@@ -306,10 +313,17 @@ class Parser:
                 startup=[str(command) for command in raw.get("startup", [])],
                 roles=list(raw.get("roles", [])),
                 kathara=dict(raw.get("kathara", {})),
-                routing=list(raw.get("routing", [])) if node_type == "router" else [],
-                asn=raw.get("asn") if node_type == "router" else None,
                 frr_config=raw.get("frr_config") if node_type == "router" else None,
             )
+            node = nodes[name]
+            if node.is_router:
+                node.ospf, node.rip, node.bgp = raw.get("ospf"), raw.get("rip"), raw.get("bgp")
+                node.routing = [protocol for protocol in ("ospf", "rip", "bgp") if protocol in raw]
+                if node.ospf:
+                    node.ospf_router_id = IPv4Address(node.ospf["router_id"])
+                if node.bgp:
+                    node.asn = node.bgp["asn"]
+                    node.bgp_router_id = IPv4Address(node.bgp["router_id"])
 
         return Lab(
             name=lab_values["name"],
@@ -330,18 +344,16 @@ class Parser:
     def _analyse(self, lab: Lab, values: dict[str, Any]) -> None:
         raw_nodes = values["nodes"]
         self._check_router_only_keys(lab, raw_nodes)  # rule 14
-        self._resolve_interface_routing(lab, raw_nodes)  # rules 15, 16
-        self._check_routing_keys(lab, raw_nodes)  # rules 17, 22
+        self._resolve_protocols(lab)  # rules 15, 16, 17, 18
         self._check_addresses(lab)  # rules 5, 6, 7, 8, 9
         self._check_capture(lab)
         self._resolve_gateways(lab)  # rules 10, 11
         self._check_routes(lab)  # rule 12
         self._check_routers(lab)  # rule 13
-        self._check_files(lab)  # rule 23
-        self._check_ospf_areas(lab)  # rules 18, 19
-        self._assign_router_ids(lab)
-        self._resolve_bgp(lab)  # rule 20
-        self._resolve_redistribution(lab)  # rule 21
+        self._check_files(lab)  # rule 33
+        self._check_ospf(lab)  # rules 19, 20, 21, 22
+        self._resolve_bgp(lab)  # rules 23-31
+        self._resolve_redistribution(lab)  # rule 32
 
     # -- rule 14 --------------------------------------------------------------
 
@@ -361,60 +373,70 @@ class Parser:
                         path = ("nodes", name, "interfaces", index, key)
                         self._error(f"'{key}' is only for routers ('{name}' is a host)", path, at_key=True)
 
-    # -- rules 15, 16 ---------------------------------------------------------
+    # -- rules 15, 16, 17, 18 -------------------------------------------------
 
-    def _resolve_interface_routing(self, lab: Lab, raw_nodes: dict[str, Any]) -> None:
-        for name, node in lab.nodes.items():
+    def _interfaces_on(self, node: Node, network: str, path: ConfigPath) -> list[Interface]:
+        """The node's addressed interfaces on ``network``; reports why there are none."""
+        attached = [interface for interface in node.interfaces if interface.network == network]
+        if not attached:
+            own = list(dict.fromkeys(interface.network for interface in node.interfaces))
+            close = difflib.get_close_matches(network, own, n=1, cutoff=0.6)
+            hint = f": did you mean '{close[0]}'?" if close else f" (its networks: {', '.join(own)})"
+            self._error(f"'{node.name}' has no interface on network '{network}'{hint}", path)
+            return []
+        addressed = [interface for interface in attached if interface.ip is not None]
+        if not addressed:
+            self._error(f"the interface of '{node.name}' on network '{network}' has no ip", path)
+        return addressed
+
+    def _check_repeated(self, names: list[str], path: ConfigPath, what: str) -> None:
+        for index, name in enumerate(names):
+            if name in names[:index]:
+                self._error(f"{what} '{name}' is listed twice", path + (index,))
+
+    def _resolve_protocols(self, lab: Lab) -> None:
+        """Mark the interfaces where OSPF and RIP run, with their OSPF area."""
+        for node in lab.nodes.values():
             if not node.is_router:
                 continue
-            for interface, raw in zip(node.interfaces, raw_nodes[name]["interfaces"]):
-                path = ("nodes", name, "interfaces", interface.index)
-                if "routing" in raw:
-                    unused = [protocol for protocol in raw["routing"] if protocol not in node.routing]
-                    if unused:
-                        self._error(
-                            f"{', '.join(unused)} not in the routing of '{name}' ({', '.join(node.routing) or 'none'})",
-                            path + ("routing",),
-                        )
-                    interface.routing = [protocol for protocol in raw["routing"] if protocol in node.routing]
-                else:
-                    interface.routing = list(node.routing)
-
-                if "area" in raw:
-                    if "ospf" not in interface.routing:
-                        self._error("'area' on an interface where OSPF does not run", path + ("area",), at_key=True)
-                    else:
-                        interface.area = raw["area"]
-                elif "ospf" in interface.routing:
-                    interface.area = 0
-
-    # -- rules 17, 22 ---------------------------------------------------------
-
-    def _check_routing_keys(self, lab: Lab, raw_nodes: dict[str, Any]) -> None:
-        for name, node in lab.nodes.items():
-            if not node.is_router:
+            base = ("nodes", node.name)
+            if node.frr_config is not None and node.routing:
+                self._error(
+                    f"frr_config together with {', '.join(node.routing)}: write the routing in frr_config",
+                    base + ("frr_config",),
+                    at_key=True,
+                )
                 continue
-            path = ("nodes", name)
-            uses_bgp = "bgp" in node.routing
-            if node.asn is not None and not uses_bgp:
-                self._error("'asn' without bgp in routing", path + ("asn",), at_key=True)
-            if uses_bgp and node.asn is None and node.frr_config is None:
-                self._error("bgp in routing needs 'asn'", path + ("routing",))
 
-            if node.frr_config is not None:
-                if node.asn is not None:
-                    self._error("'asn' together with frr_config: write the routing in frr_config", path + ("asn",), at_key=True)
-                for index, raw in enumerate(raw_nodes[name]["interfaces"]):
-                    if "area" in raw:
-                        self._error(
-                            "'area' together with frr_config: write the routing in frr_config",
-                            path + ("interfaces", index, "area"),
-                            at_key=True,
-                        )
-                if not node.routing:
-                    self._warning(
-                        "frr_config without routing: no routing daemon will be started", path + ("frr_config",), at_key=True
-                    )
+            if node.ospf:
+                area_of: dict[str, int | str] = {}
+                seen_areas: dict[int, int] = {}
+                for index, area in enumerate(node.ospf["areas"]):
+                    path = base + ("ospf", "areas", index)
+                    number = area_number(area["id"])
+                    if number in seen_areas:
+                        self._error(f"area {area['id']} is listed twice", path + ("id",))
+                        continue
+                    seen_areas[number] = index
+                    if number == 0 and area["type"] != "normal":
+                        self._error(f"area 0 is the backbone and cannot be {area['type']}", path + ("type",))
+                    node.ospf_areas.append((area["id"], area["type"]))
+                    for position, network in enumerate(area["networks"]):
+                        network_path = path + ("networks", position)
+                        if network in area_of:
+                            self._error(f"network '{network}' is already in area {area_of[network]}", network_path)
+                            continue
+                        area_of[network] = area["id"]
+                        for interface in self._interfaces_on(node, network, network_path):
+                            interface.routing.append("ospf")
+                            interface.area = area["id"]
+
+            if node.rip:
+                networks = node.rip["networks"]
+                self._check_repeated(networks, base + ("rip", "networks"), "network")
+                for position, network in enumerate(dict.fromkeys(networks)):
+                    for interface in self._interfaces_on(node, network, base + ("rip", "networks", networks.index(network))):
+                        interface.routing.append("rip")
 
     # -- rules 5, 6, 7, 8, 9 --------------------------------------------------
 
@@ -526,16 +548,30 @@ class Parser:
             if node.is_router and len(node.interfaces) < 2:
                 self._warning("router with a single interface: it cannot forward between networks", ("nodes", node.name), at_key=True)
 
-    # -- rule 23 --------------------------------------------------------------
+    # -- rule 33 --------------------------------------------------------------
 
     def _check_files(self, lab: Lab) -> None:
         for node in lab.nodes.values():
             if node.files is not None and not node.files.is_dir():
                 self._error(f"folder {node.files} does not exist", ("nodes", node.name, "files"))
 
-    # -- rules 18, 19 ---------------------------------------------------------
+    # -- rules 19, 20, 21, 22 -------------------------------------------------
 
-    def _check_ospf_areas(self, lab: Lab) -> None:
+    def _check_router_ids(self, lab: Lab, protocol: str) -> None:
+        owners: dict[IPv4Address, str] = {}
+        for node in lab.nodes.values():
+            router_id = node.ospf_router_id if protocol == "ospf" else node.bgp_router_id
+            if router_id is None or node.frr_config is not None:
+                continue
+            if router_id in owners:
+                self._error(
+                    f"{protocol.upper()} router ID {router_id} is already used by '{owners[router_id]}'",
+                    ("nodes", node.name, protocol, "router_id"),
+                )
+            owners.setdefault(router_id, node.name)
+
+    def _check_ospf(self, lab: Lab) -> None:
+        # Rule 19: the routers on a network must put it in the same area.
         for network_name, attachments in lab.networks().items():
             areas: dict[int, tuple[int | str, str]] = {}
             for node, interface in attachments:
@@ -545,105 +581,180 @@ class Parser:
                 if areas and number not in areas:
                     first_area, first_owner = next(iter(areas.values()))
                     self._error(
-                        f"network '{network_name}' is in area {interface.area} here but in area {first_area} on {first_owner}",
-                        ("nodes", node.name, "interfaces", interface.index),
+                        f"network '{network_name}' is in area {interface.area} on '{node.name}' "
+                        f"but in area {first_area} on '{first_owner}'",
+                        self._area_network_path(node, network_name),
                     )
                 areas.setdefault(number, (interface.area, node.name))
 
+        # Rule 20: every router of an area declares the same type.
+        types: dict[int, tuple[str, str]] = {}
         areas_by_router: dict[str, set[int]] = {}
         first_use: dict[int, ConfigPath] = {}
         for node in lab.nodes.values():
-            for interface in node.interfaces:
-                if interface.runs("ospf"):
-                    number = area_number(interface.area)
-                    areas_by_router.setdefault(node.name, set()).add(number)
-                    first_use.setdefault(number, ("nodes", node.name, "interfaces", interface.index))
-        for number, path in first_use.items():
-            if number == 0:
+            if not node.ospf or node.frr_config is not None:
                 continue
-            if not any({0, number} <= areas for areas in areas_by_router.values()):
-                self._error(f"no router connects area {number} to area 0", path)
+            for index, (area, area_type) in enumerate(node.ospf_areas):
+                number = area_number(area)
+                path = ("nodes", node.name, "ospf", "areas", index)
+                areas_by_router.setdefault(node.name, set()).add(number)
+                first_use.setdefault(number, path + ("id",))
+                if number in types and types[number][0] != area_type:
+                    other_type, other = types[number]
+                    self._error(f"area {area} is {area_type} here but {other_type} on '{other}'", path + ("type",))
+                types.setdefault(number, (area_type, node.name))
 
-    # -- router IDs -----------------------------------------------------------
+        # Rule 21: every area other than 0 needs a router that connects it to area 0.
+        for number, path in first_use.items():
+            if number != 0 and not any({0, number} <= areas for areas in areas_by_router.values()):
+                self._error(f"no router connects area {self._area_label(number)} to area 0", path)
 
-    def _assign_router_ids(self, lab: Lab) -> None:
-        routers = sorted(node.name for node in lab.nodes.values() if node.is_router)
-        if not routers:
-            return
-        pool = IPv4Network(self.dictionary.settings["router_id_pool"])
-        addresses = list(pool.hosts()) if pool.prefixlen < 31 else list(pool)
-        if len(routers) > len(addresses):
-            self.report.error(f"{len(routers)} routers but the router ID pool {pool} has only {len(addresses)} addresses")
-            return
-        for network_name, subnet in self._subnets.items():
-            if subnet.overlaps(pool):
-                node, interface = lab.networks()[network_name][0]
-                self._error(
-                    f"network '{network_name}' ({subnet}) overlaps the router ID pool {pool} (settings.router_id_pool)",
-                    ("nodes", node.name, "interfaces", interface.index, "ip"),
-                )
-        for name, address in zip(routers, addresses):
-            lab.nodes[name].router_id = address
+        # Rule 22: router IDs are unique.
+        self._check_router_ids(lab, "ospf")
 
-    # -- BGP, rule 20 ---------------------------------------------------------
+    @staticmethod
+    def _area_label(number: int) -> str:
+        return str(number) if number < 256 else str(IPv4Address(number))
+
+    @staticmethod
+    def _area_network_path(node: Node, network: str) -> ConfigPath:
+        for index, area in enumerate(node.ospf["areas"]):
+            if network in area["networks"]:
+                return ("nodes", node.name, "ospf", "areas", index, "networks", area["networks"].index(network))
+        return ("nodes", node.name)
+
+    # -- BGP, rules 23-31 -----------------------------------------------------
 
     def _resolve_bgp(self, lab: Lab) -> None:
-        speakers = [
-            node for node in lab.nodes.values() if node.is_router and "bgp" in node.routing and node.asn is not None
-        ]
+        speakers = {node.name: node for node in lab.nodes.values() if node.bgp and node.frr_config is None}
         if not speakers:
             return
-        networks = lab.networks()
-        speaker_names = {node.name for node in speakers}
-        by_as: dict[int, list[Node]] = defaultdict(list)
-        for node in speakers:
-            by_as[node.asn].append(node)
-        # iBGP over loopbacks needs an IGP: only when every router of the AS runs OSPF.
-        loopback_as = {asn for asn, members in by_as.items() if len(members) > 1 and all("ospf" in m.routing for m in members)}
+        self._check_router_ids(lab, "bgp")  # rule 23
 
-        adjacent: set[tuple[str, str]] = set()
-        for node in speakers:
-            if node.frr_config is not None:
-                continue
-            for interface in node.interfaces:
-                if not interface.runs("bgp"):
+        for node in speakers.values():
+            base = ("nodes", node.name, "bgp")
+            names = node.bgp["neighbors"]
+            self._check_repeated(names, base + ("neighbors",), "neighbor")
+            for index, peer_name in enumerate(names):
+                if peer_name in names[:index]:
                     continue
-                for peer, peer_interface in networks[interface.network]:
-                    if peer is node or peer.name not in speaker_names or not peer_interface.runs("bgp"):
+                path = base + ("neighbors", index)
+                peer = self._bgp_peer(lab, node, peer_name, path)  # rules 24, 25
+                if peer is None:
+                    continue
+                shared = [
+                    (own, other)
+                    for own in node.interfaces
+                    for other in peer.interfaces
+                    if own.network == other.network and own.ip is not None and other.ip is not None
+                ]
+                if peer.asn != node.asn:
+                    if not shared:  # rule 26
+                        self._error(
+                            f"'{node.name}' (AS {node.asn}) and '{peer_name}' (AS {peer.asn}) share no network: "
+                            "eBGP multihop is outside the dictionary, use frr_config",
+                            path,
+                        )
                         continue
-                    adjacent.add((node.name, peer.name))
-                    internal = peer.asn == node.asn
-                    if internal and node.asn in loopback_as:
-                        continue  # covered by the loopback full mesh
-                    node.bgp_neighbors.append(BgpNeighbor(peer_interface.ip.ip, peer.asn, peer.name, internal))
-
-        for asn, members in by_as.items():
-            if asn in loopback_as:
-                for node in members:
-                    node.loopback = node.router_id
-                for node in members:
-                    for peer in members:
-                        if peer is not node and peer.router_id is not None:
-                            node.bgp_neighbors.append(BgpNeighbor(peer.router_id, asn, peer.name, True, via_loopback=True))
-                continue
-            for left, right in combinations(members, 2):
-                if (left.name, right.name) not in adjacent:
+                    node.bgp_neighbors.append(BgpNeighbor(shared[0][1].ip.ip, peer.asn, peer.name, internal=False))
+                elif node.ospf and peer.ospf:
+                    # iBGP across the AS: sessions between router IDs, reachable through OSPF.
+                    node.bgp_neighbors.append(
+                        BgpNeighbor(peer.bgp_router_id, peer.asn, peer.name, internal=True, update_source=node.bgp_router_id)
+                    )
+                elif shared:
+                    node.bgp_neighbors.append(BgpNeighbor(shared[0][1].ip.ip, peer.asn, peer.name, internal=True))
+                else:  # rule 27
                     self._error(
-                        f"'{left.name}' and '{right.name}' are both in AS {asn} but not directly connected: "
-                        f"add ospf to the routing of every router of AS {asn}",
-                        ("nodes", right.name, "asn"),
+                        f"'{node.name}' and '{peer_name}' are both in AS {node.asn} but share no network: "
+                        "give both an ospf section so the session can cross the AS",
+                        path,
                     )
 
-        for node in speakers:
-            if node.frr_config is not None:
-                continue
             if any(not neighbor.internal for neighbor in node.bgp_neighbors):
                 for neighbor in node.bgp_neighbors:
                     neighbor.next_hop_self = neighbor.internal
-            if not node.bgp_neighbors:
-                self._warning("router uses BGP but has no BGP neighbor", ("nodes", node.name, "routing"))
+            self._resolve_bgp_networks(lab, node)  # rule 28
+            self._resolve_loopback(lab, node)  # rules 29, 30
 
-    # -- redistribution, rule 21 ----------------------------------------------
+        self._check_full_mesh(speakers)  # rule 31
+
+    def _bgp_peer(self, lab: Lab, node: Node, peer_name: str, path: ConfigPath) -> Node | None:
+        if peer_name == node.name:
+            self._error("a router cannot be its own BGP neighbor", path)
+            return None
+        peer = lab.nodes.get(peer_name)
+        if peer is None:
+            close = difflib.get_close_matches(peer_name, list(lab.nodes), n=1, cutoff=0.6)
+            self._error(f"node '{peer_name}' does not exist" + (f": did you mean '{close[0]}'?" if close else ""), path)
+            return None
+        if not peer.bgp:
+            self._error(f"'{peer_name}' has no bgp section", path)
+            return None
+        if peer.frr_config is not None:
+            self._error(f"'{peer_name}' uses frr_config: its BGP sessions are written there", path)
+            return None
+        if node.name not in peer.bgp["neighbors"]:
+            self._error(f"the session is declared only here: add '{node.name}' to the neighbors of '{peer_name}'", path)
+            return None
+        return peer
+
+    def _resolve_bgp_networks(self, lab: Lab, node: Node) -> None:
+        names = node.bgp.get("networks", [])
+        path = ("nodes", node.name, "bgp", "networks")
+        self._check_repeated(names, path, "network")
+        networks = lab.networks()
+        for index, name in enumerate(names):
+            if name in names[:index]:
+                continue
+            if name not in networks:
+                close = difflib.get_close_matches(name, list(networks), n=1, cutoff=0.6)
+                self._error(f"network '{name}' does not exist" + (f": did you mean '{close[0]}'?" if close else ""), path + (index,))
+            elif name not in self._subnets:
+                self._error(f"network '{name}' has no addressed interface, so it has no subnet to announce", path + (index,))
+            else:
+                node.bgp_networks.append(self._subnets[name])
+
+    def _resolve_loopback(self, lab: Lab, node: Node) -> None:
+        """iBGP sessions across the AS use the router ID: it must be an address announced in OSPF."""
+        if not any(neighbor.update_source for neighbor in node.bgp_neighbors):
+            return
+        router_id = node.bgp_router_id
+        path = ("nodes", node.name, "bgp", "router_id")
+        own = [interface for interface in node.interfaces if interface.ip is not None and interface.ip.ip == router_id]
+        if own:
+            if not own[0].runs("ospf"):  # rule 29
+                self._error(
+                    f"router ID {router_id} is the address of {own[0].name} ({own[0].network}), which is not in OSPF: "
+                    "iBGP neighbors could not reach it",
+                    path,
+                )
+            return
+        for other in lab.nodes.values():  # rule 30
+            for interface in other.interfaces:
+                if interface.ip is not None and interface.ip.ip == router_id:
+                    self._error(f"router ID {router_id} is the address of {other.name}:{interface.name}", path)
+                    return
+        for network, subnet in self._subnets.items():
+            if router_id in subnet:
+                self._error(f"router ID {router_id} is inside network '{network}' ({subnet})", path)
+                return
+        node.loopback = router_id
+
+    def _check_full_mesh(self, speakers: dict[str, Node]) -> None:
+        by_as: dict[int, list[Node]] = defaultdict(list)
+        for node in speakers.values():
+            by_as[node.asn].append(node)
+        for asn, members in by_as.items():
+            for left, right in combinations(members, 2):
+                if right.name not in left.bgp["neighbors"] and left.name not in right.bgp["neighbors"]:
+                    self._warning(
+                        f"'{left.name}' and '{right.name}' are both in AS {asn} but not BGP neighbors: "
+                        "iBGP needs every pair of routers of the AS to be neighbors",
+                        ("nodes", right.name, "bgp", "neighbors"),
+                    )
+
+    # -- redistribution, rule 32 ----------------------------------------------
 
     @staticmethod
     def _routing_domains(lab: Lab) -> dict[str, dict[str, str]]:
@@ -680,18 +791,13 @@ class Parser:
         for node in lab.nodes.values():
             if not node.is_router or node.frr_config is not None or len(node.routing) < 2:
                 continue
+            # BGP announces only its explicit networks; OSPF and RIP receive the routes of the others.
             node.redistribute = {
-                protocol: [other for other in node.routing if other != protocol] for protocol in node.routing
+                protocol: [other for other in node.routing if other != protocol] for protocol in node.routing if protocol != "bgp"
             }
-            for left, right in combinations(sorted(node.routing), 2):
+            if "ospf" in node.routing and "rip" in node.routing:
                 # Routes can loop back only between routers in the same domain of both protocols.
-                pairs[(left, right, domains[left][node.name], domains[right][node.name])].append(node.name)
-            summary = "; ".join(
-                f"{interface.name} ({interface.network}): {', '.join(interface.routing) or 'none'}"
-                for interface in node.interfaces
-                if interface.ip is not None
-            )
-            self.report.note(f"'{node.name}' runs {summary}", self._at_key(("nodes", node.name)), ("nodes", node.name))
+                pairs[("ospf", "rip", domains["ospf"][node.name], domains["rip"][node.name])].append(node.name)
 
         for (left, right, _, _), routers in pairs.items():
             if len(routers) > 1:

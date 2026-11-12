@@ -39,10 +39,10 @@ types:
   area:
     kind: ospf_area
     description: an OSPF area, as an integer (0, 10) or in dotted notation (0.0.0.10)
-  protocol:
+  area_type:
     kind: string
-    enum: [ospf, rip, bgp]
-    description: a routing protocol (ospf, rip or bgp)
+    enum: [normal, stub, totally_stub, nssa]
+    description: an OSPF area type (normal, stub, totally_stub or nssa)
   node_type:
     kind: string
     enum: [host, router]
@@ -147,15 +147,18 @@ sections:
       kathara:
         section: kathara
         description: "native Katharà machine options for lab.conf"
-      routing:
-        type: protocol
-        one_or_list: true
+      ospf:
+        section: ospf
         router_only: true
-        description: "routing protocols used by the router"
-      asn:
-        type: asn
+        description: "OSPF: router ID and the areas the router belongs to"
+      rip:
+        section: rip
         router_only: true
-        description: "AS number, required with BGP"
+        description: "RIP version 2: the networks where it runs"
+      bgp:
+        section: bgp
+        router_only: true
+        description: "BGP: AS number, router ID, neighbors and announced networks"
       frr_config:
         type: text
         router_only: true
@@ -171,15 +174,65 @@ sections:
       ip:
         type: cidr
         description: "address and prefix; without ip the interface is connected but not configured"
-      routing:
-        type: protocol
-        one_or_list: true
-        router_only: true
-        description: "which of the node's protocols run here (default all)"
-      area:
+
+  ospf:
+    description: the ospf section
+    keys:
+      router_id:
+        type: ip
+        required: true
+        description: "OSPF router ID, unique among the OSPF routers"
+      areas:
+        list: ospf_area
+        min: 1
+        required: true
+        description: "the areas the router belongs to"
+
+  ospf_area:
+    description: an OSPF area
+    keys:
+      id:
         type: area
-        router_only: true
-        description: "OSPF area of the interface (default 0)"
+        required: true
+        description: "area ID: an integer (0, 10) or dotted notation (0.0.0.10)"
+      type:
+        type: area_type
+        default: normal
+        description: "normal, stub, totally_stub or nssa; every router of the area must declare the same type"
+      networks:
+        list: name
+        min: 1
+        required: true
+        description: "networks of the router in this area; OSPF runs on those interfaces"
+
+  rip:
+    description: the rip section
+    keys:
+      networks:
+        list: name
+        min: 1
+        required: true
+        description: "networks of the router where RIP runs"
+
+  bgp:
+    description: the bgp section
+    keys:
+      asn:
+        type: asn
+        required: true
+        description: "AS number of the router"
+      router_id:
+        type: ip
+        required: true
+        description: "BGP router ID; iBGP sessions over OSPF use it as source address"
+      neighbors:
+        list: name
+        min: 1
+        required: true
+        description: "BGP neighbors, by node name; same asn = iBGP, different asn = eBGP"
+      networks:
+        list: name
+        description: "networks announced in BGP, by name"
 
   route:
     description: a static route
@@ -227,8 +280,10 @@ legacy:
   wireshark: "use capture.networks"
   default_gateway: "use gateway, or omit it when the LAN has a single router"
   commands: "use startup"
-  frr: "use routing (and asn) on the node; router ID, neighbors and networks are derived automatically; frr.config is now frr_config"
-  ospf_area: "use area"
+  frr: "use the ospf, rip and bgp sections of the router; frr.config is now frr_config"
+  routing: "use the ospf, rip and bgp sections of the router"
+  area: "list the network under ospf.areas of the router"
+  ospf_area: "list the network under ospf.areas of the router"
   services: "removed: start services with files and startup"
   simulation: "removed: pass the target to simulate.sh"
   connection_tests: "removed: pass clients and target to the measurement tools"
@@ -238,9 +293,6 @@ settings:
   images:
     host: kathara/base
     router: kathara/frr
-  # Router IDs, and the loopback addresses used by iBGP sessions, are taken
-  # from this pool in order of router name. It must not overlap the lab subnets.
-  router_id_pool: 10.255.255.0/24
   capture:
     node: wireshark
     image: lscr.io/linuxserver/wireshark

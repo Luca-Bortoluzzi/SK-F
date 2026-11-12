@@ -1,5 +1,5 @@
 # Four autonomous systems, one router each, connected by an eBGP mesh.
-# BGP neighbors are found on the shared networks.
+# Each router announces its LAN to its eBGP neighbors.
 lab:
   name: multi-AS
   description: Multi-AS BGP topology
@@ -23,38 +23,50 @@ nodes:
 
   r1:
     type: router
-    routing: bgp
-    asn: 65001
     interfaces:
       - {network: lan_a, ip: 10.10.1.1/24}
       - {network: r1_r2, ip: 10.0.12.1/30}
       - {network: r1_r3, ip: 10.0.13.1/30}
+    bgp:
+      asn: 65001
+      router_id: 1.1.1.1
+      neighbors: [r2, r3]
+      networks: [lan_a]
 
   r2:
     type: router
-    routing: bgp
-    asn: 65002
     interfaces:
       - {network: lan_b, ip: 10.10.2.1/24}
       - {network: r1_r2, ip: 10.0.12.2/30}
       - {network: r2_r3, ip: 10.0.23.1/30}
       - {network: r2_r4, ip: 10.0.24.1/30}
+    bgp:
+      asn: 65002
+      router_id: 2.2.2.2
+      neighbors: [r1, r3, r4]
+      networks: [lan_b]
 
   r3:
     type: router
-    routing: bgp
-    asn: 65003
     interfaces:
       - {network: lan_c, ip: 10.10.3.1/24}
       - {network: r1_r3, ip: 10.0.13.2/30}
       - {network: r2_r3, ip: 10.0.23.2/30}
       - {network: r3_r4, ip: 10.0.34.1/30}
+    bgp:
+      asn: 65003
+      router_id: 3.3.3.3
+      neighbors: [r1, r2, r4]
+      networks: [lan_c]
 
   r4:
     type: router
-    routing: bgp
-    asn: 65004
     interfaces:
       - {network: lan_d, ip: 10.10.4.1/24}
       - {network: r2_r4, ip: 10.0.24.2/30}
       - {network: r3_r4, ip: 10.0.34.2/30}
+    bgp:
+      asn: 65004
+      router_id: 4.4.4.4
+      neighbors: [r2, r3]
+      networks: [lan_d]

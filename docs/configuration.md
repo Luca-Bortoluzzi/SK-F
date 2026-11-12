@@ -38,8 +38,9 @@ lab before regenerating it.
    `unknown key 'gatway': did you mean 'gateway'?`.
 2. **One form per concept.** Each thing is written in one way.
 3. **No key without effect.** Every key in the dictionary is used by the generator.
-4. **The framework derives what it can.** Router IDs, BGP neighbors, gateways and
-   redistribution come from the topology.
+4. **Routing is explicit, the rest is derived.** Router IDs, OSPF areas and their
+   types, BGP neighbors and announced networks are written by the user. Default
+   gateways, session addresses and redistribution come from the topology.
 5. **An escape hatch.** `frr_config` replaces the generated `frr.conf` for cases
    the dictionary does not cover.
 
@@ -76,7 +77,7 @@ together. Interface order gives `eth0`, `eth1`, and so on.
 | `subnet` | network/prefix, no host bits | `10.0.1.0/24` |
 | `asn` | integer 1–4294967295 | `65001` |
 | `area` | integer or dotted notation | `0`, `10`, `0.0.0.10` |
-| `protocols` | `ospf`, `rip`, `bgp`, or a list | `ospf`, `[ospf, bgp]` |
+| `area_type` | `normal`, `stub`, `totally_stub`, `nssa` | `stub` |
 | `path` | path relative to the YAML file | `server/` |
 | `text` | string; quote numbers | `"2.0"` |
 | `bool` | `true` or `false` | `true` |
@@ -112,8 +113,9 @@ overrides it. Do not name a node `wireshark` when capturing.
 | `startup` | list of `text` | none | commands run at startup, after the network |
 | `roles` | list of `name` | none | roles for the measurement tools, e.g. `[server]`; written to `roles.conf` |
 | `kathara` | section | none | native machine options, below |
-| `routing` | `protocols` | none | routers only, see Routing |
-| `asn` | `asn` | none | routers with BGP only |
+| `ospf` | section | none | routers only, see [OSPF](#ospf) |
+| `rip` | section | none | routers only, see [RIP](#rip) |
+| `bgp` | section | none | routers only, see [BGP](#bgp) |
 | `frr_config` | `text` | none | routers only: hand-written `frr.conf` |
 
 A server is a host: what makes it a server is `files`, `startup` and `roles`.
@@ -144,50 +146,95 @@ long-running commands with `&` so startup can finish.
 | --- | --- | --- | --- |
 | `network` | `name` | required | collision domain |
 | `ip` | `cidr` | none | without `ip` the interface is connected but not configured |
-| `routing` | `protocols` | all the node's protocols | routers only: protocols running here |
-| `area` | `area` | `0` | routers with OSPF only |
 
 ## Routing
 
-Routing is described by three keys: `routing` (on the node and, when needed, on
-the interface), `area` and `asn`.
+A router runs a protocol when it has the protocol's section: `ospf`, `rip`,
+`bgp`. Each section says explicitly where the protocol runs; networks are
+referred to by name, and the router must have an addressed interface on them.
 
-- `routing` on the node: the protocols the router uses.
-- `routing` on an interface: which of those run there. Only needed when the
-  node uses more than one protocol.
-- `area` on an interface: its OSPF area, default 0.
-- `asn` on the node: the AS number, required with BGP.
+### OSPF
 
-iBGP and eBGP are not declared: two routers with the same `asn` form an iBGP
-session, with different `asn` an eBGP session.
+| Key | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `router_id` | `ip` | yes | OSPF router ID, unique among the OSPF routers |
+| `areas` | list of areas | yes | the areas the router belongs to |
+
+Each area has:
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `id` | `area` | required | `0` is the backbone |
+| `type` | `area_type` | `normal` | `stub`, `totally_stub` (stub without inter-area routes) or `nssa`; the backbone is always `normal` |
+| `networks` | list of `name` | required | the router's networks in this area; OSPF runs on those interfaces |
 
 ```yaml
-# OSPF multi-area
-r1:
-  type: router
-  routing: ospf
-  interfaces:
-    - {network: lan_a, ip: 10.10.1.1/24, area: 10}
-    - {network: r1_r2, ip: 10.0.12.1/30}
-
-# BGP
 r2:
   type: router
-  routing: bgp
-  asn: 65002
   interfaces:
+    - {network: lan_b, ip: 10.10.2.1/24}
     - {network: r1_r2, ip: 10.0.12.2/30}
-    - {network: r2_r3, ip: 10.0.23.1/30}
+    - {network: r2_r4, ip: 10.0.24.1/30}
+  ospf:
+    router_id: 2.2.2.2
+    areas:
+      - {id: 0, networks: [r1_r2]}
+      - {id: 10, type: totally_stub, networks: [lan_b]}
+      - {id: 20, type: stub, networks: [r2_r4]}
+```
 
-# OSPF inside, BGP towards the outside
+`r2` is an area border router between areas 0, 10 and 20. Every router of an
+area must declare the same type: FRR needs it on all of them. Interfaces whose
+network is not listed do not run OSPF.
+
+### RIP
+
+| Key | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `networks` | list of `name` | yes | the router's networks where RIP version 2 runs |
+
+```yaml
+rip: {networks: [rip_net, lan_r]}
+```
+
+### BGP
+
+| Key | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `asn` | `asn` | yes | AS number of the router |
+| `router_id` | `ip` | yes | BGP router ID, unique among the BGP routers |
+| `neighbors` | list of node names | yes | BGP neighbors; every session is declared on both routers |
+| `networks` | list of `name` | no | networks announced in BGP; the router does not need to be attached to them |
+
+```yaml
 a1:
   type: router
-  routing: [ospf, bgp]
-  asn: 65010
   interfaces:
     - {network: a_core, ip: 10.1.0.1/30}
-    - {network: wan,    ip: 10.255.0.1/30, routing: bgp}
+    - {network: wan,    ip: 10.255.0.1/30}
+  ospf: {router_id: 1.1.1.1, areas: [{id: 0, networks: [a_core]}]}
+  bgp:
+    asn: 65010
+    router_id: 1.1.1.1
+    neighbors: [b1]
+    networks: [lan_a]
 ```
+
+iBGP and eBGP are not declared: two neighbors with the same `asn` form an iBGP
+session, with different `asn` an eBGP session. The session addresses come from
+the topology:
+
+- **eBGP:** the neighbor's address on a network both routers are attached to.
+- **iBGP, both routers with an `ospf` section:** the neighbor's BGP `router_id`,
+  with the router's own `router_id` as source. If the router ID is not the
+  address of one of the router's interfaces, it is added to `lo` as a `/32` and
+  announced in OSPF; if it is, that interface must be in an OSPF area.
+- **iBGP, otherwise:** the neighbor's address on a shared network.
+
+iBGP needs every pair of routers of an AS to be neighbors (full mesh). Routers
+with eBGP neighbors use `next-hop-self` towards their iBGP neighbors. A network
+listed in `networks` is announced only once the router has a route to it, for
+example through OSPF.
 
 ## Automatic behavior
 
@@ -195,23 +242,17 @@ a1:
 without `gateway` uses the only router of its LANs.
 
 **Routers:** IP forwarding is enabled (`net.ipv4.ip_forward=1` in `lab.conf`);
-FRR is started with `systemctl start frr` and only the daemons of `routing` are
-enabled; router IDs are assigned in order of router name from
-`settings.router_id_pool` in the dictionary (default `10.255.255.0/24`, which
-must not overlap the lab); each protocol announces the networks of the
-interfaces where it runs.
+FRR is started with `systemctl start frr` and only the daemons of the router's
+sections are enabled (all of them with `frr_config`).
 
-**BGP:** neighbors are the BGP routers on shared networks, on interfaces where
-BGP runs; their address and AS come from their node. When every router of an AS
-also runs OSPF, the routers of that AS form an iBGP full mesh over loopback
-addresses (the router IDs, announced in OSPF), and border routers use
-`next-hop-self`. Otherwise routers of the same AS must be directly connected.
-`no bgp ebgp-requires-policy` lets eBGP routes pass without policies.
+**BGP:** `no bgp ebgp-requires-policy` lets eBGP routes pass without policies.
 
-**Redistribution:** on a router with more than one protocol, the routes of each
-are redistributed into the others. Redistributed routes are tagged and tagged
-routes are never redistributed again, so a route crosses protocols at most once
-and cannot loop back into the domain it came from.
+**Redistribution:** on a router with OSPF or RIP and another protocol, the routes
+of the others are redistributed into OSPF and RIP: routes learned through BGP
+reach the routers without BGP, and OSPF and RIP exchange their routes. Nothing
+is redistributed into BGP, which announces only its `networks`. Redistributed
+routes are tagged and tagged routes are never redistributed again, so a route
+crosses protocols at most once and cannot loop back into the domain it came from.
 
 ## Validation
 
@@ -227,31 +268,39 @@ Errors block generation; warnings do not.
 | 5 | Same IP on two interfaces | error |
 | 6 | IP equal to the network or broadcast address | error |
 | 7 | Interfaces of the same network with different subnets | error |
-| 8 | Subnets of different networks overlapping (or overlapping the router ID pool) | error |
+| 8 | Subnets of different networks overlapping | error |
 | 9 | Network with a single node | warning |
 | 10 | `gateway` outside every local subnet | error |
 | 11 | Host without `gateway` on LANs with more than one router | error |
 | 12 | Static route with `via` outside every local subnet | error |
 | 13 | Router with a single interface | warning |
-| 14 | `routing`, `area`, `asn` or `frr_config` on a host | error |
-| 15 | Interface `routing` with a protocol the node does not use | error |
-| 16 | `area` on an interface where OSPF does not run | error |
-| 17 | `asn` without `bgp` in `routing`, or `bgp` without `asn` | error |
-| 18 | Two routers on the same network with different areas | error |
-| 19 | Area other than 0 with no router connecting it to area 0 | error |
-| 20 | Routers of the same AS not directly connected and without OSPF | error |
-| 21 | Routers redistributing between the same two protocols in the same domains | warning |
-| 22 | `area` or `asn` together with `frr_config` | error: write the routing in `frr_config` |
-| 23 | `files` folder missing | error |
+| 14 | `ospf`, `rip`, `bgp` or `frr_config` on a host | error |
+| 15 | Network in `ospf` or `rip` where the router has no interface, or whose interface has no `ip` | error, with suggestion |
+| 16 | Network listed twice, or in two areas of the same router; area listed twice | error |
+| 17 | Area 0 declared `stub`, `totally_stub` or `nssa` | error |
+| 18 | `frr_config` together with `ospf`, `rip` or `bgp` | error: write the routing in `frr_config` |
+| 19 | Two routers putting the same network in different areas | error |
+| 20 | Routers of the same area declaring different types | error |
+| 21 | Area other than 0 with no router connecting it to area 0 | error |
+| 22 | Same OSPF router ID on two routers | error |
+| 23 | Same BGP router ID on two routers | error |
+| 24 | BGP neighbor that does not exist, is the router itself, has no `bgp` section or uses `frr_config` | error |
+| 25 | BGP session declared on one router only | error |
+| 26 | eBGP neighbors sharing no network (multihop) | error |
+| 27 | iBGP neighbors sharing no network, without `ospf` on both | error |
+| 28 | Network in `bgp.networks` that does not exist or has no subnet | error |
+| 29 | iBGP over OSPF with a router ID that is an interface address not in OSPF | error |
+| 30 | iBGP over OSPF with a router ID that belongs to another node or lies inside a lab network | error |
+| 31 | Two routers of the same AS that are not BGP neighbors | warning |
+| 32 | Routers redistributing between OSPF and RIP in the same domains | warning |
+| 33 | `files` folder missing | error |
 
-The Parser also reports: capture networks that do not exist and a node named
-`wireshark` when capturing (errors); a BGP router with no BGP neighbor, and
-`frr_config` without `routing`, which starts no routing daemon (warnings).
+The Parser also reports capture networks that do not exist and a node named
+`wireshark` when capturing.
 
-Keys of the previous syntax (`lab_name`, `metadata`, `frr`, `default_gateway`,
-`commands`, `ospf_area`, `wireshark`, `services`, ...) are reported with what
-replaces them. Each router with more than one protocol is listed in a note with
-the protocols of each interface.
+Keys of the previous syntax (`lab_name`, `metadata`, `frr`, `routing`, `area`,
+`default_gateway`, `commands`, `ospf_area`, `wireshark`, `services`, ...) are
+reported with what replaces them.
 
 A successful report does not check container images, command syntax or FRR
 convergence: inspect the generated files and test connectivity when adding a
@@ -259,10 +308,11 @@ topology.
 
 ## Outside the dictionary
 
-Use `frr_config` for: OSPF stub/NSSA areas, link costs, passive interfaces;
-hand-picked redistribution, filters and route-maps; hand-picked BGP neighbors,
-peers outside the lab, multihop sessions; a router in several AS (`local-as`).
-`frr_config` needs `routing` to know which daemons to start.
+Use `frr_config` for: OSPF link costs, passive interfaces, virtual links;
+hand-picked redistribution, filters and route-maps; BGP peers outside the lab
+and multihop sessions; a router in several AS (`local-as`). With `frr_config`
+the router has no `ospf`, `rip` or `bgp` section and FRR starts every routing
+daemon.
 
 ## Controller address lists
 
