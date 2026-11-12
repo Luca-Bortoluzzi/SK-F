@@ -1,0 +1,247 @@
+# SK-F syntax dictionary
+#
+# Every key that may appear in a lab file is listed here; any other key is an
+# error. This file is data: loader.py reads it, Lexer.py uses it to check
+# words and literals, Parser.py uses it to check where each key may appear and
+# which values it accepts.
+#
+#   types     value types. "kind" selects the recognizer implemented in Lexer.py.
+#   sections  mappings with a closed set of keys. Each key has exactly one of:
+#               type: <type>              a single value
+#               list: <type or section>   a list of values or sections
+#               map: <section>            user-chosen names -> sections
+#               section: <section>        a nested section
+#             and optionally: required, default, min (list/map length),
+#             one_or_list (a value or a list of values), router_only,
+#             description.
+#   legacy    keys of the previous syntax, with what replaces them.
+#   settings  constants used by the parser and the translator.
+
+types:
+  name:
+    kind: string
+    pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]*$'
+    description: a name made of letters, digits, '_', '.', '-', starting with a letter or digit
+  cidr:
+    kind: ipv4_interface
+    description: an IPv4 address with prefix, e.g. 10.0.1.10/24
+  ip:
+    kind: ipv4_address
+    description: an IPv4 address without prefix, e.g. 10.0.1.1
+  subnet:
+    kind: ipv4_network
+    description: a network with prefix and no host bits, e.g. 10.0.1.0/24
+  asn:
+    kind: integer
+    min: 1
+    max: 4294967295
+    description: an AS number from 1 to 4294967295
+  area:
+    kind: ospf_area
+    description: an OSPF area, as an integer (0, 10) or in dotted notation (0.0.0.10)
+  protocol:
+    kind: string
+    enum: [ospf, rip, bgp]
+    description: a routing protocol (ospf, rip or bgp)
+  node_type:
+    kind: string
+    enum: [host, router]
+    description: host or router
+  path:
+    kind: relative_path
+    description: a path relative to the YAML file, e.g. server/
+  text:
+    kind: string
+    description: text (put numbers in quotes, e.g. "2.0")
+  bool:
+    kind: boolean
+    description: true or false
+  number:
+    kind: number
+    min_exclusive: 0
+    description: a positive number, e.g. 0.5
+  count:
+    kind: integer
+    min: 0
+    description: a non-negative integer
+
+sections:
+  root:
+    description: the lab file
+    keys:
+      lab:
+        section: lab
+        required: true
+        description: lab data, written to the LAB_* lines of lab.conf
+      nodes:
+        map: node
+        min: 1
+        required: true
+        description: the devices of the lab, by name
+      capture:
+        section: capture
+        description: Wireshark node connected to some networks
+
+  lab:
+    description: the lab section
+    keys:
+      name:
+        type: name
+        required: true
+        description: "lab name and name of the generated folder"
+      description:
+        type: text
+        description: "LAB_DESCRIPTION"
+      version:
+        type: text
+        description: "LAB_VERSION"
+      author:
+        type: text
+        description: "LAB_AUTHOR"
+      email:
+        type: text
+        description: "LAB_EMAIL"
+      web:
+        type: text
+        description: "LAB_WEB"
+
+  capture:
+    description: the capture section
+    keys:
+      networks:
+        list: name
+        min: 1
+        required: true
+        description: "networks the Wireshark node is connected to"
+
+  node:
+    description: a node
+    keys:
+      type:
+        type: node_type
+        default: host
+        description: "router enables IP forwarding and FRR"
+      interfaces:
+        list: interface
+        min: 1
+        required: true
+        description: "interfaces; the first is eth0, the second eth1, and so on"
+      image:
+        type: text
+        description: "Docker image (default from settings.images)"
+      gateway:
+        type: ip
+        description: "default route; derived when the LAN has a single router"
+      routes:
+        list: route
+        description: "static routes"
+      files:
+        type: path
+        description: "folder copied into the root of the container"
+      startup:
+        list: text
+        description: "commands run at startup, after the network is configured"
+      roles:
+        list: name
+        description: "roles read by the measurement tools, e.g. [server]"
+      kathara:
+        section: kathara
+        description: "native Katharà machine options for lab.conf"
+      routing:
+        type: protocol
+        one_or_list: true
+        router_only: true
+        description: "routing protocols used by the router"
+      asn:
+        type: asn
+        router_only: true
+        description: "AS number, required with BGP"
+      frr_config:
+        type: text
+        router_only: true
+        description: "hand-written frr.conf that replaces the generated one"
+
+  interface:
+    description: an interface
+    keys:
+      network:
+        type: name
+        required: true
+        description: "collision domain the interface is connected to"
+      ip:
+        type: cidr
+        description: "address and prefix; without ip the interface is connected but not configured"
+      routing:
+        type: protocol
+        one_or_list: true
+        router_only: true
+        description: "which of the node's protocols run here (default all)"
+      area:
+        type: area
+        router_only: true
+        description: "OSPF area of the interface (default 0)"
+
+  route:
+    description: a static route
+    keys:
+      to:
+        type: subnet
+        required: true
+        description: "destination network"
+      via:
+        type: ip
+        required: true
+        description: "next hop"
+
+  kathara:
+    description: the kathara section
+    keys:
+      mem:
+        type: text
+        description: "memory limit, e.g. 256m"
+      cpus:
+        type: number
+        description: "CPU limit, e.g. 0.5"
+      ipv6:
+        type: bool
+        description: "enable IPv6 in the container"
+      sysctl:
+        list: text
+        description: "kernel parameters, e.g. net.ipv4.tcp_syncookies=1"
+      env:
+        list: text
+        description: "environment variables, e.g. MODE=test"
+      ports:
+        list: text
+        description: 'ports exposed on the host, e.g. "8080:80/tcp"'
+      bridged:
+        type: bool
+        description: "also connect the node to the host network"
+      num_terms:
+        type: count
+        description: "terminals opened at startup"
+
+legacy:
+  lab_name: "use lab.name"
+  metadata: "use lab.description, lab.version, lab.author, lab.email, lab.web"
+  wireshark: "use capture.networks"
+  default_gateway: "use gateway, or omit it when the LAN has a single router"
+  commands: "use startup"
+  frr: "use routing (and asn) on the node; router ID, neighbors and networks are derived automatically; frr.config is now frr_config"
+  ospf_area: "use area"
+  services: "removed: start services with files and startup"
+  simulation: "removed: pass the target to simulate.sh"
+  connection_tests: "removed: pass clients and target to the measurement tools"
+  forwarding: "removed: routers always forward"
+
+settings:
+  images:
+    host: kathara/base
+    router: kathara/frr
+  # Router IDs, and the loopback addresses used by iBGP sessions, are taken
+  # from this pool in order of router name. It must not overlap the lab subnets.
+  router_id_pool: 10.255.255.0/24
+  capture:
+    node: wireshark
+    image: lscr.io/linuxserver/wireshark
+    port: "3000:3000/tcp"
