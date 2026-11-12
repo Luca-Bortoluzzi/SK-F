@@ -1,649 +1,720 @@
 #!/usr/bin/env python3
-"""Syntactic and semantic validation for Kathara lab YAML configurations."""
+"""Syntax, structure and semantic analysis of an SK-F lab file.
+
+The Parser receives the token tree built by the Lexer and works in two phases.
+
+1. Syntax and structure, driven by the dictionary: each key must be allowed
+   in the section where it appears, required keys must be present, lists,
+   mappings and sections must have the right shape and every value must have
+   the right type (validator rule 3).
+
+2. Semantics: the lab is turned into a model (``Lab``, ``Node``,
+   ``Interface``) and checked against the remaining validator rules (5-23).
+   Everything the framework derives by itself is computed here, once:
+   default gateways, router IDs, loopbacks, BGP neighbors and redistribution.
+   The translator only renders the model.
+"""
 
 from __future__ import annotations
 
+import difflib
 import ipaddress
-import re
 from collections import defaultdict
 from dataclasses import dataclass, field
+from itertools import combinations
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-from src_gen_lab.Lexer import load_yaml, resolve_config_path
+from src_gen_lab.issues import ConfigPath, IssueReport, Position
+from src_gen_lab.Lexer import Mapping, Node as Token, Scalar, Sequence, describe, tokenize
+from src_gen_lab.loader import Dictionary, Key, Section, default_dictionary
+
+IPv4Interface = ipaddress.IPv4Interface
+IPv4Address = ipaddress.IPv4Address
+IPv4Network = ipaddress.IPv4Network
 
 
-SUPPORTED_NODE_TYPES = {"host", "router", "switch", "firewall"}
-SUPPORTED_FRR_PROTOCOLS = {"ospf", "rip", "bgp"}
-NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-
-
-@dataclass(frozen=True)
-class ValidationIssue:
-    severity: str
-    code: str
-    message: str
+# ---------------------------------------------------------------------------
+# Lab model
+# ---------------------------------------------------------------------------
 
 
 @dataclass
-class SemanticValidationReport:
-    node_count: int
-    collision_domain_count: int = 0
-    interface_count: int = 0
-    ospf_nodes: int = 0
-    bgp_nodes: int = 0
-    import_dirs_checked: bool = False
-    issues: list[ValidationIssue] = field(default_factory=list)
+class Interface:
+    index: int
+    network: str
+    ip: IPv4Interface | None
+    routing: list[str] = field(default_factory=list)  # protocols running on this interface
+    area: int | str | None = None  # OSPF area, when OSPF runs here
 
     @property
-    def errors(self) -> list[ValidationIssue]:
-        return [issue for issue in self.issues if issue.severity == "ERROR"]
+    def name(self) -> str:
+        return f"eth{self.index}"
+
+    def runs(self, protocol: str) -> bool:
+        return self.ip is not None and protocol in self.routing
+
+
+@dataclass
+class Route:
+    to: IPv4Network
+    via: IPv4Address
+
+
+@dataclass
+class BgpNeighbor:
+    address: IPv4Address
+    remote_as: int
+    peer: str
+    internal: bool  # iBGP (same AS)
+    via_loopback: bool = False
+    next_hop_self: bool = False
+
+
+@dataclass
+class Node:
+    name: str
+    type: str
+    image: str
+    interfaces: list[Interface]
+    gateway: IPv4Address | None = None
+    gateway_derived: bool = False
+    routes: list[Route] = field(default_factory=list)
+    files: Path | None = None
+    startup: list[str] = field(default_factory=list)
+    roles: list[str] = field(default_factory=list)
+    kathara: dict[str, Any] = field(default_factory=dict)
+    routing: list[str] = field(default_factory=list)
+    asn: int | None = None
+    frr_config: str | None = None
+    # Derived by the Parser
+    router_id: IPv4Address | None = None
+    loopback: IPv4Address | None = None
+    bgp_neighbors: list[BgpNeighbor] = field(default_factory=list)
+    redistribute: dict[str, list[str]] = field(default_factory=dict)
 
     @property
-    def warnings(self) -> list[ValidationIssue]:
-        return [issue for issue in self.issues if issue.severity == "WARN"]
+    def is_router(self) -> bool:
+        return self.type == "router"
 
     @property
-    def valid(self) -> bool:
-        return not self.errors
-
-    def error(self, code: str, message: str) -> None:
-        self.issues.append(ValidationIssue("ERROR", code, message))
-
-    def warn(self, code: str, message: str) -> None:
-        self.issues.append(ValidationIssue("WARN", code, message))
-
-    def has_error(self, *prefixes: str) -> bool:
-        return any(
-            any(issue.code.startswith(prefix) for prefix in prefixes)
-            for issue in self.errors
-        )
+    def runs_frr(self) -> bool:
+        return self.is_router and bool(self.routing or self.frr_config)
 
 
-class SemanticValidationError(ValueError):
-    def __init__(self, report: SemanticValidationReport):
+@dataclass
+class Lab:
+    name: str
+    source: Path
+    nodes: dict[str, Node]
+    description: str | None = None
+    version: str | None = None
+    author: str | None = None
+    email: str | None = None
+    web: str | None = None
+    capture: list[str] = field(default_factory=list)
+
+    def networks(self) -> dict[str, list[tuple[Node, Interface]]]:
+        """Collision domains in order of appearance, with the interfaces attached to each."""
+        result: dict[str, list[tuple[Node, Interface]]] = {}
+        for node in self.nodes.values():
+            for interface in node.interfaces:
+                result.setdefault(interface.network, []).append((node, interface))
+        return result
+
+
+def area_number(area: int | str) -> int:
+    """OSPF area as a 32-bit number: 10 and 0.0.0.10 are the same area."""
+    return area if isinstance(area, int) else int(IPv4Address(area))
+
+
+# ---------------------------------------------------------------------------
+# Parser
+# ---------------------------------------------------------------------------
+
+
+class Parser:
+    def __init__(self, dictionary: Dictionary, report: IssueReport, source: Path) -> None:
+        self.dictionary = dictionary
         self.report = report
-        messages = "; ".join(issue.message for issue in report.errors)
-        super().__init__(messages or "Semantic validation failed.")
+        self.source = source
+        self.value_positions: dict[ConfigPath, Position] = {}
+        self.key_positions: dict[ConfigPath, Position] = {}
+        self._subnets: dict[str, IPv4Network] = {}  # network name -> subnet, filled by _check_addresses
 
+    def parse(self, root: Token) -> Lab | None:
+        values = self._section(self.dictionary.root, root, ())
+        if not self.report.valid or values is None:
+            return None
+        lab = self._build(values)
+        self._analyse(lab, values)
+        return lab
 
-def validate_config(config: dict[str, Any]) -> None:
-    """Validate the minimum YAML structure required by the generator."""
-    if "lab_name" not in config:
-        raise ValueError("Missing required field: lab_name")
+    # -- positions ------------------------------------------------------------
 
-    if "nodes" not in config:
-        raise ValueError("Missing required field: nodes")
+    def _at(self, path: ConfigPath) -> Position | None:
+        while path not in self.value_positions and path:
+            path = path[:-1]
+        return self.value_positions.get(path)
 
-    if not isinstance(config["nodes"], dict) or not config["nodes"]:
-        raise ValueError("The nodes field must be a non-empty dictionary.")
+    def _at_key(self, path: ConfigPath) -> Position | None:
+        return self.key_positions.get(path) or self._at(path)
 
-    for node_name, node_data in config["nodes"].items():
-        if not isinstance(node_data, dict):
-            raise ValueError(f"Node {node_name} must be a dictionary.")
+    def _error(self, message: str, path: ConfigPath, at_key: bool = False) -> None:
+        self.report.error(message, self._at_key(path) if at_key else self._at(path), path)
 
-        interfaces = node_data.get("interfaces")
-        if not isinstance(interfaces, list) or not interfaces:
-            raise ValueError(f"Node {node_name} must have at least one interface.")
+    def _warning(self, message: str, path: ConfigPath, at_key: bool = False) -> None:
+        self.report.warning(message, self._at_key(path) if at_key else self._at(path), path)
 
-        for index, interface in enumerate(interfaces):
-            if not isinstance(interface, dict):
-                raise ValueError(f"Node {node_name}, interface {index}, is invalid.")
+    # =========================================================================
+    # Phase 1: syntax and structure
+    # =========================================================================
 
-            if "network" not in interface:
-                raise ValueError(
-                    f"Node {node_name}, interface {index}, has no network field."
+    def _shape_name(self, token: Token) -> str:
+        if isinstance(token, Mapping):
+            return "a mapping"
+        if isinstance(token, Sequence):
+            return "a list"
+        return describe(token.value)
+
+    def _section(self, section: Section, token: Token, path: ConfigPath) -> dict[str, Any] | None:
+        self.value_positions[path] = token.position
+        if not isinstance(token, Mapping):
+            self._error(f"expected {section.description} (a mapping), got {self._shape_name(token)}", path)
+            return None
+
+        values: dict[str, Any] = {}
+        for word, entry in token.entries.items():
+            child = path + (word,)
+            self.key_positions[child] = entry.key_position
+            key = section.keys.get(word)
+            if key is None:
+                owners = [other.description for other in self.dictionary.sections_with_key(word)]
+                self._error(
+                    f"'{word}' is not allowed in {section.description}; it belongs to {' or '.join(owners)}",
+                    child,
+                    at_key=True,
                 )
-
-
-def _declared_protocols(frr: dict[str, Any], report: SemanticValidationReport, node: str) -> list[str]:
-    protocols: list[str] = []
-
-    if "protocol" in frr:
-        protocols.append(str(frr["protocol"]).lower())
-
-    raw_protocols = frr.get("protocols")
-    if isinstance(raw_protocols, list):
-        protocols.extend(str(protocol).lower() for protocol in raw_protocols)
-    elif isinstance(raw_protocols, dict):
-        for protocol, data in raw_protocols.items():
-            if isinstance(data, dict) and data.get("enabled", True) is False:
                 continue
-            protocols.append(str(protocol).lower())
-    elif raw_protocols is not None:
-        report.error("frr_protocols_type", f"Node '{node}': frr.protocols must be a list or dictionary.")
+            value = self._value(key, entry.value, child)
+            if value is not None:
+                values[word] = value
 
-    for protocol in SUPPORTED_FRR_PROTOCOLS:
-        data = frr.get(protocol)
-        if isinstance(data, dict) and data.get("enabled", True) is not False:
-            protocols.append(protocol)
-
-    daemons = frr.get("daemons")
-    if isinstance(daemons, dict):
-        daemon_protocols = {"ospfd": "ospf", "ripd": "rip", "bgpd": "bgp"}
-        protocols.extend(
-            protocol for daemon, protocol in daemon_protocols.items() if daemons.get(daemon)
-        )
-
-    result: list[str] = []
-    for protocol in protocols:
-        if protocol not in result:
-            result.append(protocol)
-        if protocol not in SUPPORTED_FRR_PROTOCOLS:
-            report.error(
-                "frr_protocol_unsupported",
-                f"Node '{node}': unsupported FRR protocol '{protocol}'. "
-                f"Supported protocols: {', '.join(sorted(SUPPORTED_FRR_PROTOCOLS))}.",
-            )
-    return [protocol for protocol in result if protocol in SUPPORTED_FRR_PROTOCOLS]
-
-
-def _protocol_section(frr: dict[str, Any], protocol: str) -> dict[str, Any]:
-    section: dict[str, Any] = {}
-    raw_protocols = frr.get("protocols")
-    if isinstance(raw_protocols, dict) and isinstance(raw_protocols.get(protocol), dict):
-        section.update(raw_protocols[protocol])
-    direct = frr.get(protocol)
-    if isinstance(direct, dict):
-        section.update(direct)
-    return section
-
-
-def _parse_asn(value: Any) -> int | None:
-    try:
-        asn = int(value)
-    except (TypeError, ValueError):
-        return None
-    return asn if 1 <= asn <= 4_294_967_295 else None
-
-
-def _iter_explicit_ospf_networks(frr: dict[str, Any]) -> Iterable[Any]:
-    ospf = _protocol_section(frr, "ospf")
-    if "networks" in ospf:
-        networks = ospf["networks"]
-    else:
-        networks = frr.get("networks", [])
-    if isinstance(networks, list):
-        return networks
-    if networks:
-        return [networks]
-    return []
-
-
-def _target_references(config: dict[str, Any]) -> list[tuple[str, Any]]:
-    references: list[tuple[str, Any]] = []
-    node_keys = ("target_node", "target_server", "server_target")
-    ip_keys = ("target_ip",)
-    for key in node_keys + ip_keys:
-        if key in config:
-            references.append((key, config[key]))
-
-    for section_name in ("connection_tests", "simulation", "attack", "dos"):
-        section = config.get(section_name)
-        if not isinstance(section, dict):
-            continue
-        for key in node_keys + ip_keys:
-            if key in section:
-                references.append((f"{section_name}.{key}", section[key]))
-    return references
-
-
-def _candidate_import_directories(config_path: Path) -> list[Path]:
-    return [
-        path
-        for path in sorted(config_path.parent.iterdir(), key=lambda item: item.name.lower())
-        if path.is_dir()
-        and path.name != "__pycache__"
-        and not path.name.startswith(".")
-    ]
-
-
-def validate_semantics(
-    config: dict[str, Any],
-    config_path: Path | None = None,
-    import_dirs: bool = False,
-) -> SemanticValidationReport:
-    """Collect semantic errors and warnings without stopping at the first issue."""
-    validate_config(config)
-    nodes: dict[str, dict[str, Any]] = config["nodes"]
-    report = SemanticValidationReport(node_count=len(nodes), import_dirs_checked=import_dirs)
-
-    interfaces_by_node: dict[str, list[ipaddress.IPv4Interface | ipaddress.IPv6Interface]] = defaultdict(list)
-    ip_owners: dict[str, list[tuple[str, int]]] = defaultdict(list)
-    domains: dict[str, list[tuple[str, int, ipaddress.IPv4Interface | ipaddress.IPv6Interface | None]]] = defaultdict(list)
-
-    for node_name, node_data in nodes.items():
-        if not isinstance(node_name, str) or not NAME_PATTERN.fullmatch(node_name):
-            report.error(
-                "node_name_invalid",
-                f"Invalid node name '{node_name}'. Use letters, numbers, '.', '_' or '-', without spaces.",
-            )
-
-        node_kind = str(node_data.get("type", "host")).lower()
-        if node_kind not in SUPPORTED_NODE_TYPES:
-            report.error(
-                "node_type_unsupported",
-                f"Node '{node_name}': unsupported type '{node_kind}'.",
-            )
-
-        interfaces = node_data["interfaces"]
-        report.interface_count += len(interfaces)
-        for index, interface_data in enumerate(interfaces):
-            raw_domain = interface_data.get("network")
-            domain = "" if raw_domain is None else str(raw_domain).strip()
-            if not domain or not NAME_PATTERN.fullmatch(domain):
-                report.error(
-                    "network_name_invalid",
-                    f"Node '{node_name}', interface {index}: invalid collision domain name '{domain}'.",
+        for name, key in section.keys.items():
+            if name in token.entries:
+                continue
+            if key.required:
+                misspelled = any(
+                    isinstance(rejected, str) and difflib.get_close_matches(rejected, [name], cutoff=0.6)
+                    for rejected in token.rejected
                 )
+                if not misspelled:  # already reported by the Lexer as an unknown key
+                    self._error(f"missing required key '{name}' in {section.description}", path)
+            elif key.default is not None:
+                values[name] = key.default
+        return values
 
-            parsed_interface = None
-            raw_ip = interface_data.get("ip")
-            if raw_ip not in (None, ""):
-                try:
-                    parsed_interface = ipaddress.ip_interface(str(raw_ip))
-                except ValueError:
-                    report.error(
-                        "invalid_ip",
-                        f"Node '{node_name}', interface {index}: invalid IP address '{raw_ip}'.",
-                    )
+    def _value(self, key: Key, token: Token, path: ConfigPath) -> Any:
+        self.value_positions[path] = token.position
+
+        if key.shape == "section":
+            return self._section(self.dictionary.sections[key.target], token, path)
+
+        if key.shape == "map":
+            if not isinstance(token, Mapping):
+                self._error(f"expected a mapping of names, got {self._shape_name(token)}", path)
+                return None
+            if len(token.entries) < key.min_items and not token.rejected:
+                self._error(f"'{key.name}' needs at least {key.min_items} element(s)", path)
+            section = self.dictionary.sections[key.target]
+            result = {}
+            for name, entry in token.entries.items():
+                self.key_positions[path + (name,)] = entry.key_position
+                result[name] = self._section(section, entry.value, path + (name,))
+            return result
+
+        if key.shape == "list":
+            if not isinstance(token, Sequence):
+                self._error(f"expected a list, got {self._shape_name(token)}", path)
+                return None
+            if len(token.items) < key.min_items:
+                self._error(f"'{key.name}' needs at least {key.min_items} element(s)", path)
+            items = []
+            for index, item in enumerate(token.items):
+                item_path = path + (index,)
+                if self.dictionary.is_section(key.target):
+                    items.append(self._section(self.dictionary.sections[key.target], item, item_path))
                 else:
-                    interfaces_by_node[node_name].append(parsed_interface)
-                    ip_owners[str(parsed_interface.ip)].append((node_name, index))
-                    if (
-                        isinstance(parsed_interface, ipaddress.IPv4Interface)
-                        and parsed_interface.network.prefixlen < 31
-                        and parsed_interface.ip in {
-                            parsed_interface.network.network_address,
-                            parsed_interface.network.broadcast_address,
-                        }
-                    ):
-                        report.error(
-                            "invalid_host_ip",
-                            f"Node '{node_name}', interface {index}: '{raw_ip}' is a network or broadcast address.",
+                    items.append(self._scalar(key.target, item, item_path))
+            return items
+
+        # A single value, or with one_or_list a value or a list of values.
+        if key.one_or_list and isinstance(token, Sequence):
+            if not token.items:
+                self._error(f"'{key.name}' cannot be an empty list", path)
+                return None
+            items = [self._scalar(key.target, item, path + (index,)) for index, item in enumerate(token.items)]
+            repeated = sorted({item for item in items if item is not None and items.count(item) > 1})
+            if repeated:
+                self._error(f"'{key.name}' repeats {', '.join(repeated)}", path)
+            return items
+        value = self._scalar(key.target, token, path)
+        if key.one_or_list and value is not None:
+            return [value]
+        return value
+
+    def _scalar(self, type_name: str, token: Token, path: ConfigPath) -> Any:
+        self.value_positions[path] = token.position
+        value_type = self.dictionary.types[type_name]
+        if not isinstance(token, Scalar):
+            self._error(f"expected {value_type.description}, got {self._shape_name(token)}", path)
+            return None
+        if token.malformed:
+            return None  # already reported by the Lexer
+        if type_name not in token.types:
+            self._error(f"expected {value_type.description}, got {describe(token.value)}", path)
+            return None
+        return token.value
+
+    # =========================================================================
+    # Phase 2: model
+    # =========================================================================
+
+    def _build(self, values: dict[str, Any]) -> Lab:
+        lab_values = values["lab"]
+        images = self.dictionary.settings["images"]
+        nodes: dict[str, Node] = {}
+
+        for name, raw in values["nodes"].items():
+            node_type = raw["type"]
+            interfaces = [
+                Interface(
+                    index=index,
+                    network=item["network"],
+                    ip=IPv4Interface(item["ip"]) if "ip" in item else None,
+                )
+                for index, item in enumerate(raw["interfaces"])
+            ]
+            nodes[name] = Node(
+                name=name,
+                type=node_type,
+                image=raw.get("image", images[node_type]),
+                interfaces=interfaces,
+                gateway=IPv4Address(raw["gateway"]) if "gateway" in raw else None,
+                routes=[Route(IPv4Network(item["to"]), IPv4Address(item["via"])) for item in raw.get("routes", [])],
+                files=(self.source.parent / raw["files"]) if "files" in raw else None,
+                startup=[str(command) for command in raw.get("startup", [])],
+                roles=list(raw.get("roles", [])),
+                kathara=dict(raw.get("kathara", {})),
+                routing=list(raw.get("routing", [])) if node_type == "router" else [],
+                asn=raw.get("asn") if node_type == "router" else None,
+                frr_config=raw.get("frr_config") if node_type == "router" else None,
+            )
+
+        return Lab(
+            name=lab_values["name"],
+            source=self.source,
+            nodes=nodes,
+            description=lab_values.get("description"),
+            version=lab_values.get("version"),
+            author=lab_values.get("author"),
+            email=lab_values.get("email"),
+            web=lab_values.get("web"),
+            capture=list(values.get("capture", {}).get("networks", [])),
+        )
+
+    # =========================================================================
+    # Phase 2: semantic rules and derivations
+    # =========================================================================
+
+    def _analyse(self, lab: Lab, values: dict[str, Any]) -> None:
+        raw_nodes = values["nodes"]
+        self._check_router_only_keys(lab, raw_nodes)  # rule 14
+        self._resolve_interface_routing(lab, raw_nodes)  # rules 15, 16
+        self._check_routing_keys(lab, raw_nodes)  # rules 17, 22
+        self._check_addresses(lab)  # rules 5, 6, 7, 8, 9
+        self._check_capture(lab)
+        self._resolve_gateways(lab)  # rules 10, 11
+        self._check_routes(lab)  # rule 12
+        self._check_routers(lab)  # rule 13
+        self._check_files(lab)  # rule 23
+        self._check_ospf_areas(lab)  # rules 18, 19
+        self._assign_router_ids(lab)
+        self._resolve_bgp(lab)  # rule 20
+        self._resolve_redistribution(lab)  # rule 21
+
+    # -- rule 14 --------------------------------------------------------------
+
+    def _check_router_only_keys(self, lab: Lab, raw_nodes: dict[str, Any]) -> None:
+        node_keys = [key.name for key in self.dictionary.sections["node"].keys.values() if key.router_only]
+        interface_keys = [key.name for key in self.dictionary.sections["interface"].keys.values() if key.router_only]
+        for name, node in lab.nodes.items():
+            if node.is_router:
+                continue
+            raw = raw_nodes[name]
+            for key in node_keys:
+                if key in raw:
+                    self._error(f"'{key}' is only for routers ('{name}' is a host)", ("nodes", name, key), at_key=True)
+            for index, interface in enumerate(raw["interfaces"]):
+                for key in interface_keys:
+                    if key in interface:
+                        path = ("nodes", name, "interfaces", index, key)
+                        self._error(f"'{key}' is only for routers ('{name}' is a host)", path, at_key=True)
+
+    # -- rules 15, 16 ---------------------------------------------------------
+
+    def _resolve_interface_routing(self, lab: Lab, raw_nodes: dict[str, Any]) -> None:
+        for name, node in lab.nodes.items():
+            if not node.is_router:
+                continue
+            for interface, raw in zip(node.interfaces, raw_nodes[name]["interfaces"]):
+                path = ("nodes", name, "interfaces", interface.index)
+                if "routing" in raw:
+                    unused = [protocol for protocol in raw["routing"] if protocol not in node.routing]
+                    if unused:
+                        self._error(
+                            f"{', '.join(unused)} not in the routing of '{name}' ({', '.join(node.routing) or 'none'})",
+                            path + ("routing",),
                         )
-            domains[domain].append((node_name, index, parsed_interface))
+                    interface.routing = [protocol for protocol in raw["routing"] if protocol in node.routing]
+                else:
+                    interface.routing = list(node.routing)
 
-        if node_kind == "router":
-            commands = "\n".join(str(command) for command in node_data.get("commands", []))
-            if node_data.get("forwarding") is False or re.search(r"ip_forward\s*=\s*0", commands):
-                report.error(
-                    "router_forwarding_disabled",
-                    f"Router '{node_name}' explicitly disables IPv4 forwarding.",
-                )
-            if len(interfaces) < 2:
-                report.warn(
-                    "router_single_interface",
-                    f"Router '{node_name}' has only one interface and cannot forward between networks.",
-                )
+                if "area" in raw:
+                    if "ospf" not in interface.routing:
+                        self._error("'area' on an interface where OSPF does not run", path + ("area",), at_key=True)
+                    else:
+                        interface.area = raw["area"]
+                elif "ospf" in interface.routing:
+                    interface.area = 0
 
-    report.collision_domain_count = len(domains)
+    # -- rules 17, 22 ---------------------------------------------------------
 
-    for address, owners in sorted(ip_owners.items()):
-        if len(owners) > 1:
-            locations = ", ".join(f"{node}:eth{index}" for node, index in owners)
-            report.error("duplicate_ip", f"Duplicate IP address {address}: {locations}.")
+    def _check_routing_keys(self, lab: Lab, raw_nodes: dict[str, Any]) -> None:
+        for name, node in lab.nodes.items():
+            if not node.is_router:
+                continue
+            path = ("nodes", name)
+            uses_bgp = "bgp" in node.routing
+            if node.asn is not None and not uses_bgp:
+                self._error("'asn' without bgp in routing", path + ("asn",), at_key=True)
+            if uses_bgp and node.asn is None and node.frr_config is None:
+                self._error("bgp in routing needs 'asn'", path + ("routing",))
 
-    domain_subnets: dict[str, set[ipaddress.IPv4Network | ipaddress.IPv6Network]] = {}
-    for domain, endpoints in sorted(domains.items()):
-        if len(endpoints) == 1:
-            node, index, _ = endpoints[0]
-            report.warn(
-                "isolated_network",
-                f"Collision domain '{domain}' has a single endpoint ({node}:eth{index}) and is isolated.",
-            )
-        subnets = {interface.network for _, _, interface in endpoints if interface is not None}
-        domain_subnets[domain] = subnets
-        if len(subnets) > 1:
-            report.error(
-                "domain_subnet_inconsistent",
-                f"Collision domain '{domain}' uses inconsistent subnets: "
-                + ", ".join(str(network) for network in sorted(subnets, key=str))
-                + ".",
-            )
-
-    domain_names = sorted(domain_subnets)
-    for left_index, left_name in enumerate(domain_names):
-        for right_name in domain_names[left_index + 1:]:
-            overlaps = [
-                (left, right)
-                for left in domain_subnets[left_name]
-                for right in domain_subnets[right_name]
-                if left.version == right.version and left.overlaps(right)
-            ]
-            if overlaps:
-                left, right = overlaps[0]
-                report.error(
-                    "subnet_overlap",
-                    f"Collision domains '{left_name}' ({left}) and '{right_name}' ({right}) overlap.",
-                )
-
-    for node_name, node_data in nodes.items():
-        gateway = node_data.get("default_gateway")
-        if gateway not in (None, ""):
-            try:
-                gateway_ip = ipaddress.ip_address(str(gateway))
-            except ValueError:
-                report.error("gateway_invalid", f"Node '{node_name}': invalid default gateway '{gateway}'.")
-            else:
-                local_interfaces = interfaces_by_node.get(node_name, [])
-                if not any(
-                    interface.version == gateway_ip.version and gateway_ip in interface.network
-                    for interface in local_interfaces
-                ):
-                    report.error(
-                        "gateway_outside_subnet",
-                        f"Node '{node_name}': gateway {gateway_ip} does not belong to any local interface subnet.",
+            if node.frr_config is not None:
+                if node.asn is not None:
+                    self._error("'asn' together with frr_config: write the routing in frr_config", path + ("asn",), at_key=True)
+                for index, raw in enumerate(raw_nodes[name]["interfaces"]):
+                    if "area" in raw:
+                        self._error(
+                            "'area' together with frr_config: write the routing in frr_config",
+                            path + ("interfaces", index, "area"),
+                            at_key=True,
+                        )
+                if not node.routing:
+                    self._warning(
+                        "frr_config without routing: no routing daemon will be started", path + ("frr_config",), at_key=True
                     )
 
-        lowered_name = str(node_name).lower()
-        requires_address = (
-            "attacker" in lowered_name
-            or lowered_name.startswith("zombie")
-            or lowered_name == "server"
-            or lowered_name.endswith("_server")
-        )
-        if requires_address and not interfaces_by_node.get(node_name):
-            report.error(
-                "role_without_ip",
-                f"Node '{node_name}' requires at least one valid IP address for its role.",
-            )
+    # -- rules 5, 6, 7, 8, 9 --------------------------------------------------
 
-    protocols_by_node: dict[str, list[str]] = {}
-    frr_by_node: dict[str, dict[str, Any]] = {}
-    router_ids: dict[str, set[str]] = defaultdict(set)
-    bgp_asn_by_node: dict[str, int] = {}
+    def _check_addresses(self, lab: Lab) -> None:
+        owners: dict[IPv4Address, list[str]] = defaultdict(list)
+        for node in lab.nodes.values():
+            for interface in node.interfaces:
+                if interface.ip is None:
+                    continue
+                path = ("nodes", node.name, "interfaces", interface.index, "ip")
+                owners[interface.ip.ip].append(f"{node.name}:{interface.name}")
+                if len(owners[interface.ip.ip]) > 1:
+                    self._error(f"{interface.ip.ip} is already used by {owners[interface.ip.ip][0]}", path)
+                network = interface.ip.network
+                if network.prefixlen < 31 and interface.ip.ip in (network.network_address, network.broadcast_address):
+                    kind = "network" if interface.ip.ip == network.network_address else "broadcast"
+                    self._error(f"{interface.ip} is the {kind} address of {network}", path)
 
-    for node_name, node_data in nodes.items():
-        raw_frr = node_data.get("frr")
-        if raw_frr in (None, False):
-            continue
-        if not isinstance(raw_frr, dict):
-            report.error("frr_type", f"Node '{node_name}': frr must be a dictionary.")
-            continue
-        if raw_frr.get("enabled", True) is False:
-            continue
-
-        frr_by_node[node_name] = raw_frr
-        protocols = _declared_protocols(raw_frr, report, node_name)
-        protocols_by_node[node_name] = protocols
-        if "ospf" in protocols:
-            report.ospf_nodes += 1
-        if "bgp" in protocols:
-            report.bgp_nodes += 1
-
-        effective_ids: set[str] = set()
-        common_id = raw_frr.get("router_id")
-        for protocol in protocols:
-            section = _protocol_section(raw_frr, protocol)
-            router_id = section.get("router_id", common_id)
-            if router_id in (None, ""):
-                continue
-            try:
-                parsed_router_id = ipaddress.IPv4Address(str(router_id))
-            except ValueError:
-                report.error(
-                    "router_id_invalid",
-                    f"Node '{node_name}': invalid {protocol.upper()} router ID '{router_id}'.",
+        subnets: dict[str, IPv4Network] = {}
+        for network_name, attachments in lab.networks().items():
+            node, interface = attachments[0]
+            if len(attachments) == 1:
+                self._warning(
+                    f"network '{network_name}' has only one node attached",
+                    ("nodes", node.name, "interfaces", interface.index, "network"),
                 )
-            else:
-                effective_ids.add(str(parsed_router_id))
-        for router_id in effective_ids:
-            router_ids[router_id].add(str(node_name))
-
-        if "bgp" in protocols:
-            bgp = _protocol_section(raw_frr, "bgp")
-            asn_value = bgp.get("asn", raw_frr.get("asn"))
-            asn = _parse_asn(asn_value)
-            if asn is None:
-                report.error(
-                    "bgp_asn_invalid",
-                    f"Node '{node_name}' uses BGP but has no valid ASN (1-4294967295).",
-                )
-            else:
-                bgp_asn_by_node[node_name] = asn
-
-    for router_id, owners in sorted(router_ids.items()):
-        if len(owners) > 1:
-            report.error(
-                "router_id_duplicate",
-                f"Router ID {router_id} is duplicated by nodes: {', '.join(sorted(owners))}.",
-            )
-
-    for node_name, protocols in protocols_by_node.items():
-        if "ospf" not in protocols:
-            continue
-        frr = frr_by_node[node_name]
-        local_networks = [interface.network for interface in interfaces_by_node.get(node_name, [])]
-        for interface_data in nodes[node_name]["interfaces"]:
-            if "ospf_area" in interface_data and not interface_data.get("ip"):
-                report.error(
-                    "ospf_interface_without_ip",
-                    f"Node '{node_name}': an OSPF-enabled interface has no IP address.",
-                )
-        for entry in _iter_explicit_ospf_networks(frr):
-            raw_network = entry
-            if isinstance(entry, dict):
-                raw_network = entry.get("network", entry.get("prefix"))
-            try:
-                advertised = ipaddress.ip_network(str(raw_network), strict=False)
-            except ValueError:
-                report.error(
-                    "ospf_network_invalid",
-                    f"Node '{node_name}': invalid OSPF network '{raw_network}'.",
-                )
-                continue
-            if not any(
-                network.version == advertised.version and network.overlaps(advertised)
-                for network in local_networks
-            ):
-                report.error(
-                    "ospf_network_disconnected",
-                    f"Node '{node_name}': OSPF network {advertised} is not connected to any interface.",
-                )
-
-    interface_ip_to_node = {
-        str(interface.ip): node_name
-        for node_name, interfaces in interfaces_by_node.items()
-        for interface in interfaces
-    }
-    bgp_neighbors_by_node: dict[str, set[str]] = defaultdict(set)
-
-    for node_name, protocols in protocols_by_node.items():
-        if "bgp" not in protocols:
-            continue
-        frr = frr_by_node[node_name]
-        bgp = _protocol_section(frr, "bgp")
-        neighbors = bgp.get("neighbors", frr.get("neighbors", []))
-        if not isinstance(neighbors, list):
-            report.error("bgp_neighbors_type", f"Node '{node_name}': BGP neighbors must be a list.")
-            continue
-        for neighbor in neighbors:
-            if not isinstance(neighbor, dict):
-                report.error("bgp_neighbor_invalid", f"Node '{node_name}': invalid BGP neighbor entry.")
-                continue
-            raw_ip = neighbor.get("ip")
-            try:
-                neighbor_ip = str(ipaddress.ip_address(str(raw_ip)))
-            except ValueError:
-                report.error(
-                    "bgp_neighbor_ip_invalid",
-                    f"Node '{node_name}': invalid BGP neighbor IP '{raw_ip}'.",
-                )
-                continue
-            bgp_neighbors_by_node[node_name].add(neighbor_ip)
-            peer_node = interface_ip_to_node.get(neighbor_ip)
-            if peer_node is None:
-                report.error(
-                    "bgp_neighbor_missing",
-                    f"Node '{node_name}': BGP neighbor {neighbor_ip} does not belong to any declared node.",
-                )
-                continue
-            if peer_node == node_name:
-                report.error(
-                    "bgp_neighbor_self",
-                    f"Node '{node_name}': BGP neighbor {neighbor_ip} points to the node itself.",
-                )
-                continue
-
-            remote_as = _parse_asn(neighbor.get("remote_as"))
-            if remote_as is None:
-                report.error(
-                    "bgp_remote_as_invalid",
-                    f"Node '{node_name}': neighbor {neighbor_ip} has an invalid remote_as.",
-                )
-                continue
-            peer_asn = bgp_asn_by_node.get(peer_node)
-            if peer_asn is None:
-                report.error(
-                    "bgp_peer_without_asn",
-                    f"Node '{node_name}': neighbor {neighbor_ip} belongs to '{peer_node}', which has no valid BGP ASN.",
-                )
-            elif remote_as != peer_asn:
-                report.error(
-                    "bgp_remote_as_mismatch",
-                    f"Node '{node_name}': neighbor {neighbor_ip} declares remote_as {remote_as}, "
-                    f"but peer '{peer_node}' uses AS {peer_asn}.",
-                )
-
-    for node_name, neighbor_ips in bgp_neighbors_by_node.items():
-        own_ips = {str(interface.ip) for interface in interfaces_by_node.get(node_name, [])}
-        for neighbor_ip in neighbor_ips:
-            peer_node = interface_ip_to_node.get(neighbor_ip)
-            if not peer_node or peer_node == node_name or peer_node not in bgp_neighbors_by_node:
-                continue
-            if not (own_ips & bgp_neighbors_by_node[peer_node]):
-                report.warn(
-                    "bgp_neighbor_not_reciprocal",
-                    f"BGP adjacency '{node_name}' -> '{peer_node}' is not declared in the reverse direction.",
-                )
-
-    declared_ips = set(interface_ip_to_node)
-    target_references = _target_references(config)
-    attack_topology = any(
-        "attacker" in str(node_name).lower()
-        or str(node_name).lower().startswith("zombie")
-        for node_name in nodes
-    )
-    if attack_topology and not target_references:
-        report.error(
-            "target_missing",
-            "An attacker/zombie topology must declare a target_node or target_ip.",
-        )
-    for section_name in ("connection_tests", "simulation", "attack", "dos"):
-        section = config.get(section_name)
-        if not isinstance(section, dict) or section.get("enabled", True) is False:
-            continue
-        if not any(location.startswith(f"{section_name}.") for location, _ in target_references):
-            report.error(
-                "target_missing",
-                f"Section '{section_name}' is enabled but declares no target_node or target_ip.",
-            )
-
-    for location, target in target_references:
-        if target in (None, ""):
-            report.error("target_missing", f"'{location}' is empty.")
-            continue
-        if location.endswith("target_ip"):
-            try:
-                target_ip = str(ipaddress.ip_address(str(target)))
-            except ValueError:
-                report.error("target_ip_invalid", f"'{location}' contains invalid IP '{target}'.")
-            else:
-                if target_ip not in declared_ips:
-                    report.error(
-                        "target_ip_undeclared",
-                        f"Target IP {target_ip} in '{location}' is not assigned to any node.",
+            seen: dict[IPv4Network, str] = {}
+            for node, interface in attachments:
+                if interface.ip is None:
+                    continue
+                subnet = interface.ip.network
+                if seen and subnet not in seen:
+                    first_subnet, first_owner = next(iter(seen.items()))
+                    self._error(
+                        f"network '{network_name}' uses {first_subnet} on {first_owner}, but {subnet} here",
+                        ("nodes", node.name, "interfaces", interface.index, "ip"),
                     )
-        else:
-            target_node = str(target)
-            if target_node not in nodes:
-                report.error(
-                    "target_node_undeclared",
-                    f"Target node '{target}' in '{location}' is not declared in nodes.",
-                )
-            elif not interfaces_by_node.get(target_node):
-                report.error(
-                    "target_node_without_ip",
-                    f"Target node '{target_node}' in '{location}' has no valid IP address.",
-                )
+                seen.setdefault(subnet, f"{node.name}:{interface.name}")
+            if seen:
+                subnets[network_name] = next(iter(seen))
 
-    connection_tests = config.get("connection_tests")
-    if isinstance(connection_tests, dict):
-        clients = connection_tests.get("clients", [])
-        if isinstance(clients, list):
-            for client in clients:
-                if str(client) not in nodes:
-                    report.error(
-                        "client_node_undeclared",
-                        f"Connection-test client '{client}' is not declared in nodes.",
-                    )
-        elif clients:
-            report.error(
-                "client_nodes_type",
-                "'connection_tests.clients' must be a list of declared node names.",
+        for (left, left_net), (right, right_net) in combinations(subnets.items(), 2):
+            if left_net.overlaps(right_net):
+                node, interface = lab.networks()[right][0]
+                self.report.error(
+                    f"networks '{left}' ({left_net}) and '{right}' ({right_net}) overlap",
+                    self._at(("nodes", node.name, "interfaces", interface.index, "ip")),
+                )
+        self._subnets = subnets
+
+    # -- capture ----------------------------------------------------------------
+
+    def _check_capture(self, lab: Lab) -> None:
+        networks = lab.networks()
+        for index, network in enumerate(lab.capture):
+            if network not in networks:
+                self._error(f"network '{network}' does not exist", ("capture", "networks", index))
+        capture_node = self.dictionary.settings["capture"]["node"]
+        if lab.capture and capture_node in lab.nodes:
+            self._error(
+                f"a node is named '{capture_node}', the name of the capture node: rename it",
+                ("nodes", capture_node),
+                at_key=True,
             )
 
-    if import_dirs:
-        if config_path is None:
-            report.error("import_config_path_missing", "Cannot validate imported directories without a YAML path.")
-        else:
-            invalid_dirs = [
-                path.name
-                for path in _candidate_import_directories(config_path)
-                if path.name not in nodes
-            ]
-            if invalid_dirs:
-                report.warn(
-                    "import_node_missing",
-                    "Directories skipped because they have no matching node: "
-                    + ", ".join(invalid_dirs)
-                    + ".",
+    # -- rules 10, 11 ---------------------------------------------------------
+
+    @staticmethod
+    def _local_subnets(node: Node) -> list[IPv4Network]:
+        return [interface.ip.network for interface in node.interfaces if interface.ip is not None]
+
+    def _resolve_gateways(self, lab: Lab) -> None:
+        networks = lab.networks()
+        for node in lab.nodes.values():
+            path = ("nodes", node.name)
+            if node.gateway is not None:
+                if not any(node.gateway in subnet for subnet in self._local_subnets(node)):
+                    self._error(f"gateway {node.gateway} is outside every local subnet", path + ("gateway",))
+                continue
+            if node.is_router or not self._local_subnets(node):
+                continue
+
+            candidates: list[tuple[str, IPv4Address]] = []
+            for interface in node.interfaces:
+                if interface.ip is None:
+                    continue
+                for other, other_interface in networks[interface.network]:
+                    if other.is_router and other_interface.ip is not None:
+                        candidates.append((other.name, other_interface.ip.ip))
+            if len(candidates) == 1:
+                node.gateway = candidates[0][1]
+                node.gateway_derived = True
+            elif len(candidates) > 1:
+                routers = ", ".join(f"{router} ({address})" for router, address in candidates)
+                self._error(f"more than one router on the host's LANs ({routers}): set 'gateway'", path, at_key=True)
+
+    # -- rule 12 --------------------------------------------------------------
+
+    def _check_routes(self, lab: Lab) -> None:
+        for node in lab.nodes.values():
+            for index, route in enumerate(node.routes):
+                if not any(route.via in subnet for subnet in self._local_subnets(node)):
+                    self._error(f"next hop {route.via} is outside every local subnet", ("nodes", node.name, "routes", index, "via"))
+
+    # -- rule 13 --------------------------------------------------------------
+
+    def _check_routers(self, lab: Lab) -> None:
+        for node in lab.nodes.values():
+            if node.is_router and len(node.interfaces) < 2:
+                self._warning("router with a single interface: it cannot forward between networks", ("nodes", node.name), at_key=True)
+
+    # -- rule 23 --------------------------------------------------------------
+
+    def _check_files(self, lab: Lab) -> None:
+        for node in lab.nodes.values():
+            if node.files is not None and not node.files.is_dir():
+                self._error(f"folder {node.files} does not exist", ("nodes", node.name, "files"))
+
+    # -- rules 18, 19 ---------------------------------------------------------
+
+    def _check_ospf_areas(self, lab: Lab) -> None:
+        for network_name, attachments in lab.networks().items():
+            areas: dict[int, tuple[int | str, str]] = {}
+            for node, interface in attachments:
+                if not interface.runs("ospf"):
+                    continue
+                number = area_number(interface.area)
+                if areas and number not in areas:
+                    first_area, first_owner = next(iter(areas.values()))
+                    self._error(
+                        f"network '{network_name}' is in area {interface.area} here but in area {first_area} on {first_owner}",
+                        ("nodes", node.name, "interfaces", interface.index),
+                    )
+                areas.setdefault(number, (interface.area, node.name))
+
+        areas_by_router: dict[str, set[int]] = {}
+        first_use: dict[int, ConfigPath] = {}
+        for node in lab.nodes.values():
+            for interface in node.interfaces:
+                if interface.runs("ospf"):
+                    number = area_number(interface.area)
+                    areas_by_router.setdefault(node.name, set()).add(number)
+                    first_use.setdefault(number, ("nodes", node.name, "interfaces", interface.index))
+        for number, path in first_use.items():
+            if number == 0:
+                continue
+            if not any({0, number} <= areas for areas in areas_by_router.values()):
+                self._error(f"no router connects area {number} to area 0", path)
+
+    # -- router IDs -----------------------------------------------------------
+
+    def _assign_router_ids(self, lab: Lab) -> None:
+        routers = sorted(node.name for node in lab.nodes.values() if node.is_router)
+        if not routers:
+            return
+        pool = IPv4Network(self.dictionary.settings["router_id_pool"])
+        addresses = list(pool.hosts()) if pool.prefixlen < 31 else list(pool)
+        if len(routers) > len(addresses):
+            self.report.error(f"{len(routers)} routers but the router ID pool {pool} has only {len(addresses)} addresses")
+            return
+        for network_name, subnet in self._subnets.items():
+            if subnet.overlaps(pool):
+                node, interface = lab.networks()[network_name][0]
+                self._error(
+                    f"network '{network_name}' ({subnet}) overlaps the router ID pool {pool} (settings.router_id_pool)",
+                    ("nodes", node.name, "interfaces", interface.index, "ip"),
+                )
+        for name, address in zip(routers, addresses):
+            lab.nodes[name].router_id = address
+
+    # -- BGP, rule 20 ---------------------------------------------------------
+
+    def _resolve_bgp(self, lab: Lab) -> None:
+        speakers = [
+            node for node in lab.nodes.values() if node.is_router and "bgp" in node.routing and node.asn is not None
+        ]
+        if not speakers:
+            return
+        networks = lab.networks()
+        speaker_names = {node.name for node in speakers}
+        by_as: dict[int, list[Node]] = defaultdict(list)
+        for node in speakers:
+            by_as[node.asn].append(node)
+        # iBGP over loopbacks needs an IGP: only when every router of the AS runs OSPF.
+        loopback_as = {asn for asn, members in by_as.items() if len(members) > 1 and all("ospf" in m.routing for m in members)}
+
+        adjacent: set[tuple[str, str]] = set()
+        for node in speakers:
+            if node.frr_config is not None:
+                continue
+            for interface in node.interfaces:
+                if not interface.runs("bgp"):
+                    continue
+                for peer, peer_interface in networks[interface.network]:
+                    if peer is node or peer.name not in speaker_names or not peer_interface.runs("bgp"):
+                        continue
+                    adjacent.add((node.name, peer.name))
+                    internal = peer.asn == node.asn
+                    if internal and node.asn in loopback_as:
+                        continue  # covered by the loopback full mesh
+                    node.bgp_neighbors.append(BgpNeighbor(peer_interface.ip.ip, peer.asn, peer.name, internal))
+
+        for asn, members in by_as.items():
+            if asn in loopback_as:
+                for node in members:
+                    node.loopback = node.router_id
+                for node in members:
+                    for peer in members:
+                        if peer is not node and peer.router_id is not None:
+                            node.bgp_neighbors.append(BgpNeighbor(peer.router_id, asn, peer.name, True, via_loopback=True))
+                continue
+            for left, right in combinations(members, 2):
+                if (left.name, right.name) not in adjacent:
+                    self._error(
+                        f"'{left.name}' and '{right.name}' are both in AS {asn} but not directly connected: "
+                        f"add ospf to the routing of every router of AS {asn}",
+                        ("nodes", right.name, "asn"),
+                    )
+
+        for node in speakers:
+            if node.frr_config is not None:
+                continue
+            if any(not neighbor.internal for neighbor in node.bgp_neighbors):
+                for neighbor in node.bgp_neighbors:
+                    neighbor.next_hop_self = neighbor.internal
+            if not node.bgp_neighbors:
+                self._warning("router uses BGP but has no BGP neighbor", ("nodes", node.name, "routing"))
+
+    # -- redistribution, rule 21 ----------------------------------------------
+
+    @staticmethod
+    def _routing_domains(lab: Lab) -> dict[str, dict[str, str]]:
+        """For each protocol, the routing domain of every router: routers linked by that protocol share one."""
+        parent: dict[tuple[str, str], tuple[str, str]] = {}
+
+        def find(item: tuple[str, str]) -> tuple[str, str]:
+            parent.setdefault(item, item)
+            while parent[item] != item:
+                parent[item] = parent[parent[item]]
+                item = parent[item]
+            return item
+
+        def union(protocol: str, left: str, right: str) -> None:
+            parent[find((protocol, left))] = find((protocol, right))
+
+        for attachments in lab.networks().values():
+            for protocol in ("ospf", "rip"):
+                routers = [node.name for node, interface in attachments if node.is_router and interface.runs(protocol)]
+                for other in routers[1:]:
+                    union(protocol, routers[0], other)
+        for node in lab.nodes.values():
+            for neighbor in node.bgp_neighbors:
+                union("bgp", node.name, neighbor.peer)
+
+        return {
+            protocol: {node.name: find((protocol, node.name))[1] for node in lab.nodes.values()}
+            for protocol in ("ospf", "rip", "bgp")
+        }
+
+    def _resolve_redistribution(self, lab: Lab) -> None:
+        domains = self._routing_domains(lab)
+        pairs: dict[tuple[str, str, str, str], list[str]] = defaultdict(list)
+        for node in lab.nodes.values():
+            if not node.is_router or node.frr_config is not None or len(node.routing) < 2:
+                continue
+            node.redistribute = {
+                protocol: [other for other in node.routing if other != protocol] for protocol in node.routing
+            }
+            for left, right in combinations(sorted(node.routing), 2):
+                # Routes can loop back only between routers in the same domain of both protocols.
+                pairs[(left, right, domains[left][node.name], domains[right][node.name])].append(node.name)
+            summary = "; ".join(
+                f"{interface.name} ({interface.network}): {', '.join(interface.routing) or 'none'}"
+                for interface in node.interfaces
+                if interface.ip is not None
+            )
+            self.report.note(f"'{node.name}' runs {summary}", self._at_key(("nodes", node.name)), ("nodes", node.name))
+
+        for (left, right, _, _), routers in pairs.items():
+            if len(routers) > 1:
+                self.report.warning(
+                    f"routers {', '.join(routers)} all redistribute between {left} and {right} in the same domains: "
+                    "each route is redistributed at most once, but paths may be suboptimal; "
+                    "use frr_config for finer control",
+                    self._at_key(("nodes", routers[1])),
+                    ("nodes", routers[1]),
                 )
 
-    return report
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 
-def semantic_report_lines(report: SemanticValidationReport) -> list[str]:
-    lines = [
-        f"[OK] {report.node_count} nodes validated",
-        f"[OK] {report.collision_domain_count} collision domains validated",
-    ]
-    if not report.has_error("invalid_ip", "invalid_host_ip", "duplicate_ip"):
-        lines.append("[OK] IP addresses are valid and unique")
-    if not report.has_error("domain_subnet", "subnet_overlap", "gateway_"):
-        lines.append("[OK] Subnets and default gateways are coherent")
-    if not report.has_error("router_forwarding"):
-        lines.append("[OK] Router forwarding declarations are coherent")
-    if report.ospf_nodes and not report.has_error("ospf_", "router_id_"):
-        lines.append(f"[OK] OSPF configuration is coherent on {report.ospf_nodes} nodes")
-    if report.bgp_nodes and not report.has_error("bgp_", "router_id_"):
-        lines.append(f"[OK] BGP configuration is coherent on {report.bgp_nodes} nodes")
-    if report.import_dirs_checked and not any(
-        issue.code.startswith("import_") for issue in report.issues
-    ):
-        lines.append("[OK] Imported directories match declared nodes")
-
-    lines.extend(f"[{issue.severity}] {issue.message}" for issue in report.issues)
-    if report.valid:
-        lines.append(
-            f"[OK] Semantic validation passed with {len(report.warnings)} warning(s)"
-        )
-    else:
-        lines.append(
-            f"[ERROR] Semantic validation failed with {len(report.errors)} error(s) "
-            f"and {len(report.warnings)} warning(s)"
-        )
-    return lines
-
-
-def print_semantic_report(report: SemanticValidationReport) -> None:
-    for line in semantic_report_lines(report):
-        print(line)
-
-
-def parse_yaml_configuration(argument: str, config_dir: Path) -> tuple[Path, dict[str, Any]]:
-    config_path = resolve_config_path(argument, config_dir)
-    config = load_yaml(config_path)
-    validate_config(config)
-    return config_path, config
+def read_lab(path: Path, dictionary: Dictionary | None = None) -> tuple[Lab | None, IssueReport]:
+    """Run the Lexer and the Parser on a lab file. The lab is ``None`` if there are errors."""
+    dictionary = dictionary or default_dictionary()
+    report = IssueReport(source=path)
+    tokens = tokenize(path, dictionary, report)
+    lab = None
+    if tokens is not None:
+        lab = Parser(dictionary, report, path).parse(tokens)
+    return (lab if report.valid else None), report
