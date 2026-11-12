@@ -8,7 +8,8 @@ its matching agent. Use the supplied generated lab as the target environment.
 
 ## Timed connection-holding agents
 
-The standard `simulate.sh` workflow uses files imported from `configs/`:
+The standard `simulate.sh` workflow uses files that the example labs copy from
+`configs/` through their nodes' `files` keys:
 
 | Component | Source |
 | --- | --- |

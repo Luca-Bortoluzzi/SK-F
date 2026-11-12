@@ -58,14 +58,19 @@ directory:
 
 ```bash
 cd labs/dos_lab
-kathara exec pc_a1 ip route
-kathara exec pc_a1 ping -c 1 10.30.1.10
-kathara exec r1 vtysh -c 'show ip route'
-kathara exec r1 vtysh -c 'show ip ospf neighbor'
+kathara exec pc_a1 "ip route"
+kathara exec pc_a1 "ping -c 1 10.30.1.10"
+kathara exec r1 "vtysh -c 'show ip route'"
+kathara exec r1 "vtysh -c 'show ip ospf neighbor'"
+kathara exec r1 "vtysh -c 'show bgp summary'"
 ```
 
-Check matching collision domains, interface addresses, default gateways, FRR
-configuration, and forwarding. Increase `--startup-wait` or `--routing-timeout`
+Quote the whole command: without quotes, options such as `-c` or `-n` are read
+by `kathara exec` itself and the command fails.
+
+Check matching collision domains, interface addresses, default gateways, and
+the generated `<router>/etc/frr/frr.conf`. Generated router IDs come from
+`settings.router_id_pool` in `src_gen_lab/dictionary.yml`. Increase `--startup-wait` or `--routing-timeout`
 when the configuration is correct but convergence is slow. ICMP filtering also
 prevents the simulator from passing its readiness check.
 
@@ -79,14 +84,14 @@ reachability if clients can ping the proxy but cannot obtain `pong`.
 From the generated lab directory:
 
 ```bash
-kathara exec server tail -n 40 /tmp/service.log
-kathara exec zombie_1 tail -n 40 /tmp/zombie.log
+kathara exec server "tail -n 40 /tmp/service.log"
+kathara exec zombie_1 "tail -n 40 /tmp/zombie.log"
 ```
 
 In the mitigation lab, also run:
 
 ```bash
-kathara exec proxy tail -n 40 /tmp/reverse_proxy.log
+kathara exec proxy "tail -n 40 /tmp/reverse_proxy.log"
 ```
 
 The simulator's `kathara exec ... did not return a command result` error means it

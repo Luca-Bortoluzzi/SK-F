@@ -79,6 +79,9 @@ together. Interface order gives `eth0`, `eth1`, and so on.
 | `protocols` | `ospf`, `rip`, `bgp`, or a list | `ospf`, `[ospf, bgp]` |
 | `path` | path relative to the YAML file | `server/` |
 | `text` | string; quote numbers | `"2.0"` |
+| `bool` | `true` or `false` | `true` |
+| `number` | positive number | `0.5` |
+| `count` | non-negative integer | `2` |
 
 A value of the wrong type is an error. Text keys need quotes around values YAML
 would read as numbers: `version: "2.0"`, not `version: 2.0`.
@@ -240,6 +243,10 @@ Errors block generation; warnings do not.
 | 21 | Routers redistributing between the same two protocols in the same domains | warning |
 | 22 | `area` or `asn` together with `frr_config` | error: write the routing in `frr_config` |
 | 23 | `files` folder missing | error |
+
+The Parser also reports: capture networks that do not exist and a node named
+`wireshark` when capturing (errors); a BGP router with no BGP neighbor, and
+`frr_config` without `routing`, which starts no routing daemon (warnings).
 
 Keys of the previous syntax (`lab_name`, `metadata`, `frr`, `default_gateway`,
 `commands`, `ospf_area`, `wireshark`, `services`, ...) are reported with what

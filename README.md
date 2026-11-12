@@ -11,13 +11,17 @@ and produces CSV files, text reports, and optional plots.
 
 ## Features
 
-- Define hosts, routers, interfaces, collision domains, static routes, and startup
-  commands in YAML.
+- Describe hosts, routers, interfaces, collision domains, static routes, node
+  files, and startup commands in YAML with a closed vocabulary: every allowed key
+  is listed in a dictionary, and anything else is an error with a suggestion.
+- Write only what cannot be derived: gateways, router IDs, BGP neighbors (with an
+  automatic iBGP full mesh), and redistribution between protocols come from the
+  topology.
 - Generate FRRouting (FRR) configuration for OSPF, multi-area OSPF, RIP, BGP, and
   combinations of these protocols.
-- Validate addresses, subnets, gateways, routing declarations, and experiment
-  targets before creating files.
-- Import per-node files and attach a Wireshark node to selected networks.
+- Check addresses, subnets, gateways, and routing consistency before creating
+  files, reporting every problem at once with its line and column.
+- Attach a Wireshark node to selected networks.
 - Run baseline and load experiments with simultaneous requests from multiple
   clients, including automatic startup, routing checks, and cleanup.
 - Measure ICMP round-trip time, TCP connection time, application response time,
@@ -149,7 +153,7 @@ bash stop.sh labs/test
 | Guide | What it covers |
 | --- | --- |
 | [Example configurations](configs/README.md) | Available topologies, their output names, and sample limitations |
-| [Configuration reference](docs/configuration.md) | YAML fields, routing, file imports, validation, and Wireshark |
+| [Configuration reference](docs/configuration.md) | YAML syntax, routing, derived values, validation rules, and Wireshark |
 | [Running experiments](docs/running-experiments.md) | Simulator options, manual tests, lifecycle, and service settings |
 | [Results and metrics](docs/results.md) | Output files, CSV columns, reports, and interpretation |
 | [Troubleshooting](docs/troubleshooting.md) | Setup failures, routing, missing services, and unexpected results |
@@ -166,4 +170,4 @@ python3 run_connection_tests.py --help
 
 ## License
 
-SK-F is distributed under the [MIT license](LICENSE).
+SK-F is distributed under the [GNU General Public License v3.0](LICENSE).
