@@ -25,21 +25,26 @@ mode; `dos` is an alias for `attack`.
 | `baseline` | Baseline only; the runner does not start load agents or dispatch an attack |
 | `attack` / `dos` | Load measurements only, stored with scenario name `dos` |
 
-The default lab is `mitigation`, but its correct public target must be supplied:
+The default lab is `mitigation`.
 
-```bash
-./simulate.sh mitigation full --target proxy --server server
-```
+The simulator finds its nodes through the `roles` key of the YAML, which the
+generator writes to `roles.conf` in the lab folder:
 
-`--target` chooses the endpoint tested by clients and load agents. `--server`
-chooses the node running `service.py` and sampled with Docker stats. For
-`dos_lab`, both default to `server`. In `mitigation`, the target is `proxy` and
-the measured application server is still named `server`. The help text's
-`backend_server` reference does not match this configuration.
+| Role | Used as | Without roles |
+| --- | --- | --- |
+| `server` | node running `service.py`, sampled with Docker stats (`--server`) | node named `server` |
+| `proxy` | public endpoint tested by clients and load agents (`--target`) | the server |
+| `attacker` | controller running `attacker.py` | node named `attacker` |
+| `zombie` | load agents running `zombie.py` | nodes named `zombie*` |
+| `client` | measuring clients (`--clients`) | nodes named `pc_*` or `pc-*` |
 
-For every mode, the simulator requires a server node with `service.py`, a node
-named exactly `attacker` with `attacker.py`, at least one `zombie*` node with
-`zombie.py`, and client nodes. This also applies to baseline and dry-run modes.
+In `dos_lab` the target is therefore `server`; in `mitigation` it is `proxy`,
+while the measured application server is still `server`. Command-line options
+override the roles.
+
+For every mode, the simulator requires a server node with `service.py`, an
+attacker node with `attacker.py`, at least one zombie node with `zombie.py`, and
+client nodes. This also applies to baseline and dry-run modes.
 Nodes and addresses are read from `lab.conf` and the first `ip address add` line
 of each `.startup` file. Target IPs must match one of those first addresses.
 
@@ -65,10 +70,10 @@ environment variables use `0` or `1`.
 | Option | Default | Environment variable | Purpose |
 | --- | --- | --- | --- |
 | `--mode MODE` | `full` | `SIM_MODE` | Select measurement phases |
-| `--target NODE_OR_IP` | `server` | `SIM_TARGET` | Client and load target |
-| `--server NODE` | `server` | `SIM_SERVER` | Service and resource-metrics node |
+| `--target NODE_OR_IP` | node with role `proxy`, else the server | `SIM_TARGET` | Client and load target |
+| `--server NODE` | node with role `server`, else `server` | `SIM_SERVER` | Service and resource-metrics node |
 | `--port N` | `9000` | `SIM_PORT` | Target TCP port and simulator-started service port |
-| `--clients "pc_a1 pc_a2"` | Nodes starting `pc_` or `pc-` | `SIM_CLIENTS` | Space-separated client list |
+| `--clients "pc_a1 pc_a2"` | Nodes with role `client`, else nodes starting `pc_` or `pc-` | `SIM_CLIENTS` | Space-separated client list |
 | `--attempts N` | `10` | `SIM_ATTEMPTS` | Simultaneous rounds per client |
 | `--timeout N` | `3` | `SIM_TIMEOUT` | Timeout for individual client measurements, in seconds |
 | `--delay N` | `1` | `SIM_DELAY` | Seconds between rounds; may be fractional |

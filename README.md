@@ -59,8 +59,8 @@ For PNG plots, also install Matplotlib:
 python3 -m pip install matplotlib
 ```
 
-Scripts are stored without executable permissions. Enable the entry points once;
-`simulate.sh` also executes the Python measurement and report scripts directly:
+The entry-point scripts are executable in the repository. If a copy lost the
+permissions (for example after extracting an archive), restore them with:
 
 ```bash
 chmod +x ./*.sh ./*.py
@@ -119,11 +119,12 @@ To compare the mitigation topology:
 
 ```bash
 python3 generate_lab.py mitigation
-./simulate.sh mitigation full --target proxy --server server --plot
+./simulate.sh mitigation full --plot
 ```
 
-Pass **`--target proxy`** for this topology. The simulator's default target is
-`server`, which is on the private backend network in this lab.
+The simulator reads the node roles written by the generator: in this topology the
+node with role `proxy` becomes the target, and the backend with role `server` is
+the measured application server.
 
 ## Working with a network manually
 

@@ -17,7 +17,7 @@ container images, live routes, or service availability.
 
 | Symptom | What to check |
 | --- | --- |
-| `Permission denied` when running a script | Run `chmod +x ./*.sh ./*.py` from the repository root. Invoking the simulator through Bash alone does not make its directly executed Python helpers executable. |
+| `Permission denied` when running a script | The copy lost the executable bits: run `chmod +x ./*.sh ./*.py` from the repository root, or call the script through `bash` or `python3`. |
 | `PyYAML is not installed` | Activate `.venv` and run `python3 -m pip install PyYAML`. |
 | Python syntax/type-annotation errors | Use Python 3.10+ on the host and for the supplied container scripts. |
 | `kathara`, `docker`, or `timeout` not found | Complete setup and check `PATH`. The simulator expects Linux/GNU utilities and Katharà's Docker backend. |
@@ -43,11 +43,10 @@ Check that `labs/dos_lab/server/service.py`, its sibling `server_metrics.py`,
 inside containers, so host-relative paths such as `configs/server/service.py`
 will not work there. Check the files actually mounted in `/hostlab` and `/shared`.
 
-Some `dos_lab` zombie startup commands use `/hostlab/zombie.py`; with a lab-root
-mount, the file is instead under `/hostlab/zombie_1/zombie.py` (and similarly for
-other agents). The simulator searches these node-specific paths and starts the
-agents when needed. For a manual startup workflow, use the correct path in each
-node's YAML `startup`.
+A node's `files` folder is visible in its container both as `/hostlab/<node>/`
+and copied into the root: `zombie_1/zombie.py` is `/hostlab/zombie_1/zombie.py`
+and `/zombie.py`. The example labs start their agents from `/hostlab/<node>/`;
+the simulator searches both places and starts the agents when needed.
 
 ## Routes and mitigation
 
@@ -75,7 +74,7 @@ only when the router has a route to it. Increase `--startup-wait` or `--routing-
 when the configuration is correct but convergence is slow. ICMP filtering also
 prevents the simulator from passing its readiness check.
 
-For mitigation, use `--target proxy --server server`. The private backend
+In mitigation the simulator targets the node with role `proxy`. The private backend
 `10.30.2.10` is not routed from the clients; the public proxy is `10.30.1.10`.
 The simulator does not start the proxy on demand. Inspect its startup and backend
 reachability if clients can ping the proxy but cannot obtain `pong`.

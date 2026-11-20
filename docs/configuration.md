@@ -111,7 +111,7 @@ overrides it. Do not name a node `wireshark` when capturing.
 | `routes` | list of `{to: subnet, via: ip}` | none | static routes |
 | `files` | `path` | none | folder copied into the root of the container |
 | `startup` | list of `text` | none | commands run at startup, after the network |
-| `roles` | list of `name` | none | roles for the measurement tools, e.g. `[server]`; written to `roles.conf` |
+| `roles` | list of `name` | none | roles for the measurement tools, written to `roles.conf`: `server`, `proxy`, `attacker`, `zombie`, `client` |
 | `kathara` | section | none | native machine options, below |
 | `ospf` | section | none | routers only, see [OSPF](#ospf) |
 | `rip` | section | none | routers only, see [RIP](#rip) |
@@ -326,7 +326,7 @@ daemon.
 
 ## Controller address lists
 
-`simulate.sh` discovers `zombie*` nodes and rewrites the attacker's
+`simulate.sh` discovers the zombie nodes (role `zombie`, else `zombie*`) and rewrites the attacker's
 `zombies.txt` before every run. To write the list at generation time instead:
 
 ```bash

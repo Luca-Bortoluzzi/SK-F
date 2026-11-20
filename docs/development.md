@@ -60,7 +60,7 @@ labs/<lab.name>/
     etc/frr/daemons
     etc/frr/frr.conf
     etc/frr/vtysh.conf
-  roles.conf                      # node roles, when any node declares roles
+  roles.conf                      # node roles, read by simulate.sh, run_connection_tests.py, zombies_*.py
   shared/                         # created/used by runtime tools
 ```
 
