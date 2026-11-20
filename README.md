@@ -150,6 +150,21 @@ stop the lab with:
 bash stop.sh labs/test
 ```
 
+## Generated files
+
+The tools write only to three folders at the repository root. They are listed in
+`.gitignore`, so they never end up in a commit:
+
+| Folder | Written by | Contents |
+| --- | --- | --- |
+| `labs/<lab.name>/` | `generate_lab.py` | the Katharà lab: `lab.conf`, startup files, node folders, `roles.conf` |
+| `results/<lab>/simulation_<n>/` | `simulate.sh`, `run_connection_tests.py` | connection CSVs, server metrics, plots |
+| `logs/<lab>/` | `run_connection_tests.py` | measurement logs, one folder per client |
+
+Keep the sources in `configs/` and regenerate a lab with `--force` rather than
+editing it. `del_lab.sh` and `clear_results.sh` remove these folders; see
+[Running experiments](docs/running-experiments.md#stop-and-remove-generated-data).
+
 ## Documentation
 
 | Guide | What it covers |

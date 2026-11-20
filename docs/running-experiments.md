@@ -152,7 +152,8 @@ Interactive mode prompts for the lab and measurement settings:
 python3 run_connection_tests.py --lab dos_lab
 ```
 
-For automation, supply `--non-interactive` and explicit settings:
+For automation, supply `--non-interactive` and explicit settings (`--target` may
+be omitted when the lab declares a `server` or `proxy` role):
 
 ```bash
 python3 run_connection_tests.py --lab dos_lab --target server --port 9000 \
@@ -167,9 +168,9 @@ This command requires a running `dos_lab`; one way to prepare it is
 | Option | Standalone behavior |
 | --- | --- |
 | `--lab NAME_OR_PATH` | Select a generated lab; otherwise infer it from the current directory or `labs/`, prompting if necessary |
-| `--target NODE_OR_IP` | Required in noninteractive mode; resolve node names from `.startup` files |
+| `--target NODE_OR_IP` | Node names are resolved from `.startup` files. If omitted, the node with role `proxy`, else the node with role `server`, from the lab's `roles.conf`; without either, required in noninteractive mode |
 | `--port N` | Required in noninteractive mode; interactive default 9000 |
-| `--clients LIST` | Space- or comma-separated names; otherwise discover clients, preferring running Docker containers |
+| `--clients LIST` | Space- or comma-separated names; otherwise the nodes with role `client`, else running `pc_*` containers, else the `pc_*` nodes of `lab.conf` |
 | `--scenario NAME` | Output label, default `baseline`; use a simple filename-safe name |
 | `--attempts N`, `--timeout N`, `--delay N` | Defaults 10 rounds, 3 seconds, and 1 second |
 | `--simulation N` | Explicit positive number; default next available for this lab |
@@ -243,3 +244,7 @@ current directory's `labs/`; it does not stop containers first.
 `bash clear_results.sh` recursively removes **both `results/` and `logs/`** under
 the current working directory. It has no selection or confirmation step. Export
 any measurements you want to keep before using these removal helpers.
+
+`labs/`, `results/` and `logs/` are listed in `.gitignore`: generated labs and
+measurements are never committed. Copy results elsewhere to keep them under
+version control.

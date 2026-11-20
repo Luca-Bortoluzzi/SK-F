@@ -23,6 +23,7 @@
 | `show_server_metrics.py` | Summarize service events and Docker resource samples |
 | `zombies_start.py`, `zombies_stop.py`, `attacks/` | Separate manual load workflow; see the [protocol guide](../attacks/README.md) |
 | `clear_results.sh` | Remove the current directory's saved results and logs |
+| `.gitignore` | Excludes generated output (`labs/`, `results/`, `logs/`), Python caches, virtual environments and editor files |
 
 There is no package installer or dependency lockfile. PyYAML is required for
 generation; Matplotlib is optional for plotting. Other imports in the host tools
