@@ -16,4 +16,4 @@ venv/
 *.swp
 .DS_Store
 
-*Dizionario della sintassi.pdf
+*.pdf
