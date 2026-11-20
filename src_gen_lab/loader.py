@@ -34,7 +34,7 @@ SCALAR_KINDS = frozenset({
 })
 
 SHAPES = ("type", "list", "map", "section")
-KEY_ATTRIBUTES = frozenset(SHAPES) | {"required", "default", "min", "one_or_list", "router_only", "description"}
+KEY_ATTRIBUTES = frozenset(SHAPES) | {"required", "default", "min", "router_only", "description"}
 
 
 @dataclass(frozen=True)
@@ -60,7 +60,6 @@ class Key:
     required: bool = False
     default: Any = None
     min_items: int = 0
-    one_or_list: bool = False
     router_only: bool = False
 
 
@@ -131,7 +130,6 @@ def _load_key(section: str, name: str, raw: Any) -> Key:
         required=bool(raw.get("required", False)),
         default=raw.get("default"),
         min_items=int(raw.get("min", 0)),
-        one_or_list=bool(raw.get("one_or_list", False)),
         router_only=bool(raw.get("router_only", False)),
     )
 
@@ -151,7 +149,6 @@ def _check_references(types: dict[str, ValueType], sections: dict[str, Section])
                     key.target in types or key.target in sections,
                     f"{where} refers to unknown type or section '{key.target}'",
                 )
-            _require(not (key.one_or_list and key.shape != "type"), f"{where}: one_or_list needs 'type'")
 
 
 def _check_settings(settings: dict[str, Any]) -> None:

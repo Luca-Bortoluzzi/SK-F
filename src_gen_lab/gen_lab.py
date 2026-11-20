@@ -198,6 +198,7 @@ def render_frr_conf(node: Node) -> str:
         lines.append(f"router bgp {node.asn}")
         lines.append(f" bgp router-id {node.bgp_router_id}")
         lines.append(" no bgp ebgp-requires-policy")
+        lines.append(" bgp network import-check")
         for neighbor in node.bgp_neighbors:
             lines.append(f" neighbor {neighbor.address} remote-as {neighbor.remote_as}")
             lines.append(f" neighbor {neighbor.address} description {neighbor.peer}")

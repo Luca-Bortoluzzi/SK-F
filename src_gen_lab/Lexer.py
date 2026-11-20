@@ -10,7 +10,8 @@ dictionary, without looking at where they appear:
   a key such as ``nodes``, a user-chosen name (rule 4); keys of the previous
   syntax are reported with what replaces them;
 * every value is classified into the dictionary types it belongs to (ip, cidr,
-  name, ...); a value that looks like an address but is not valid is an error.
+  name, ...); a value that looks like an address but is not valid is an error,
+  and so is an IPv6 address: addresses are IPv4 only.
 
 The result is a tree of tokens with their position in the file. Rejected keys
 are left out of the tree, so the Parser never sees them.
@@ -39,6 +40,17 @@ YAML_EXTENSIONS = (".yml", ".yaml")
 
 # A string meant as an IPv4 address: four dotted numbers, or numbers with a prefix.
 _ADDRESS_LIKE = re.compile(r"^[0-9]+(\.[0-9]+){3}(/[0-9]+)?$|^[0-9.]+/[0-9]+$")
+
+
+def _is_ipv6(value: str) -> bool:
+    """An IPv6 address or network, with or without prefix."""
+    if ":" not in value:
+        return False
+    try:
+        ipaddress.IPv6Interface(value)
+    except ValueError:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +308,9 @@ class Lexer:
             if not any(self.dictionary.types[name].kind.startswith("ipv4") for name in types):
                 self.report.error(f"malformed IPv4 address '{value}'", position, path)
                 malformed = True
+        elif isinstance(value, str) and _is_ipv6(value):
+            self.report.error(f"'{value}' is an IPv6 address: only IPv4 addresses are supported", position, path)
+            malformed = True
         return Scalar(value, position, types, malformed)
 
 

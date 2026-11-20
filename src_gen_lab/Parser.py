@@ -255,20 +255,7 @@ class Parser:
                     items.append(self._scalar(key.target, item, item_path))
             return items
 
-        # A single value, or with one_or_list a value or a list of values.
-        if key.one_or_list and isinstance(token, Sequence):
-            if not token.items:
-                self._error(f"'{key.name}' cannot be an empty list", path)
-                return None
-            items = [self._scalar(key.target, item, path + (index,)) for index, item in enumerate(token.items)]
-            repeated = sorted({item for item in items if item is not None and items.count(item) > 1})
-            if repeated:
-                self._error(f"'{key.name}' repeats {', '.join(repeated)}", path)
-            return items
-        value = self._scalar(key.target, token, path)
-        if key.one_or_list and value is not None:
-            return [value]
-        return value
+        return self._scalar(key.target, token, path)
 
     def _scalar(self, type_name: str, token: Token, path: ConfigPath) -> Any:
         self.value_positions[path] = token.position
@@ -359,19 +346,12 @@ class Parser:
 
     def _check_router_only_keys(self, lab: Lab, raw_nodes: dict[str, Any]) -> None:
         node_keys = [key.name for key in self.dictionary.sections["node"].keys.values() if key.router_only]
-        interface_keys = [key.name for key in self.dictionary.sections["interface"].keys.values() if key.router_only]
         for name, node in lab.nodes.items():
             if node.is_router:
                 continue
-            raw = raw_nodes[name]
             for key in node_keys:
-                if key in raw:
+                if key in raw_nodes[name]:
                     self._error(f"'{key}' is only for routers ('{name}' is a host)", ("nodes", name, key), at_key=True)
-            for index, interface in enumerate(raw["interfaces"]):
-                for key in interface_keys:
-                    if key in interface:
-                        path = ("nodes", name, "interfaces", index, key)
-                        self._error(f"'{key}' is only for routers ('{name}' is a host)", path, at_key=True)
 
     # -- rules 15, 16, 17, 18 -------------------------------------------------
 
@@ -423,6 +403,9 @@ class Parser:
                     node.ospf_areas.append((area["id"], area["type"]))
                     for position, network in enumerate(area["networks"]):
                         network_path = path + ("networks", position)
+                        if network in area["networks"][:position]:
+                            self._error(f"network '{network}' is listed twice", network_path)
+                            continue
                         if network in area_of:
                             self._error(f"network '{network}' is already in area {area_of[network]}", network_path)
                             continue
@@ -553,7 +536,8 @@ class Parser:
     def _check_files(self, lab: Lab) -> None:
         for node in lab.nodes.values():
             if node.files is not None and not node.files.is_dir():
-                self._error(f"folder {node.files} does not exist", ("nodes", node.name, "files"))
+                written = node.files.relative_to(lab.source.parent)
+                self._error(f"folder '{written}' does not exist next to {lab.source.name}", ("nodes", node.name, "files"))
 
     # -- rules 19, 20, 21, 22 -------------------------------------------------
 
@@ -630,6 +614,7 @@ class Parser:
         if not speakers:
             return
         self._check_router_ids(lab, "bgp")  # rule 23
+        reported: set[frozenset[str]] = set()  # pairs already reported by rules 26-27
 
         for node in speakers.values():
             base = ("nodes", node.name, "bgp")
@@ -648,8 +633,12 @@ class Parser:
                     for other in peer.interfaces
                     if own.network == other.network and own.ip is not None and other.ip is not None
                 ]
+                pair = frozenset((node.name, peer.name))
                 if peer.asn != node.asn:
                     if not shared:  # rule 26
+                        if pair in reported:
+                            continue
+                        reported.add(pair)
                         self._error(
                             f"'{node.name}' (AS {node.asn}) and '{peer_name}' (AS {peer.asn}) share no network: "
                             "eBGP multihop is outside the dictionary, use frr_config",
@@ -664,7 +653,8 @@ class Parser:
                     )
                 elif shared:
                     node.bgp_neighbors.append(BgpNeighbor(shared[0][1].ip.ip, peer.asn, peer.name, internal=True))
-                else:  # rule 27
+                elif pair not in reported:  # rule 27
+                    reported.add(pair)
                     self._error(
                         f"'{node.name}' and '{peer_name}' are both in AS {node.asn} but share no network: "
                         "give both an ospf section so the session can cross the AS",
