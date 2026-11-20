@@ -87,6 +87,42 @@ together. Interface order gives `eth0`, `eth1`, and so on.
 A value of the wrong type is an error. Text keys need quotes around values YAML
 would read as numbers: `version: "2.0"`, not `version: 2.0`.
 
+## Lists
+
+Thirteen keys are always lists, even with a single element: `[ ... ]` in the
+compact form, or one `-` per element in the extended form. A single element
+written without the list is an error (`expected a list`); for example
+`startup: python3 /service.py &` must be `startup: [python3 /service.py &]` or:
+
+```yaml
+startup:
+  - python3 /service.py &
+```
+
+Lists of sections: each element has its own keys, so the compact form is
+`[{ ... }]`.
+
+| Key | One element, compact form |
+| --- | --- |
+| `interfaces` | `interfaces: [{network: lan_a, ip: 10.10.1.10/24}]` |
+| `routes` | `routes: [{to: 10.5.0.0/16, via: 10.0.1.1}]` |
+| `ospf.areas` | `areas: [{id: 0, networks: [a_core]}]` |
+
+Lists of values: each element is a name or a text.
+
+| Key | One element, compact form |
+| --- | --- |
+| `startup` | `startup: [python3 /service.py &]` |
+| `roles` | `roles: [server]` |
+| `capture.networks` | `networks: [wan]` |
+| `networks` of an OSPF area | `networks: [lan_b]` |
+| `rip.networks` | `networks: [rip_net]` |
+| `bgp.neighbors` | `neighbors: [b1]` |
+| `bgp.networks` | `networks: [lan_a]` |
+| `kathara.sysctl`, `kathara.env`, `kathara.ports` | `ports: ["8080:80/tcp"]` |
+
+Every other key takes a single value or a section, never a list.
+
 ## Sections
 
 The file has two required sections, `lab` and `nodes`, and an optional `capture`.
@@ -146,6 +182,26 @@ long-running commands with `&` so startup can finish.
 | --- | --- | --- | --- |
 | `network` | `name` | required | collision domain |
 | `ip` | `cidr` | none | without `ip` the interface is connected but not configured |
+
+`interfaces` is always a list, even with a single interface: the position in the
+list gives the name (`eth0`, `eth1`, ...), and a second interface is added
+without changing the structure. These two forms are the same list:
+
+```yaml
+pc_a:
+  interfaces: [{network: lan_a, ip: 10.10.1.10/24}]
+```
+
+```yaml
+pc_a:
+  interfaces:
+    - network: lan_a
+      ip: 10.10.1.10/24
+```
+
+In the compact form `[ ... ]` is the list and `{ ... }` one interface; in the
+extended form each `-` starts an interface. A single interface written without
+the list (`interfaces: {network: lan_a, ...}`) is an error: one form per concept.
 
 ## Routing
 

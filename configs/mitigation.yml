@@ -13,7 +13,9 @@ lab:
 nodes:
   # Legitimate user LAN A
   pc_a1:
-    interfaces: [{network: lan_a, ip: 10.10.1.10/24}]
+    interfaces: 
+      - network: lan_a 
+        ip: 10.10.1.10/24
 
   pc_a2:
     interfaces: [{network: lan_a, ip: 10.10.1.11/24}]
