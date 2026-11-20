@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from zombies_start import DEFAULT_LAB, kathara_connect, project_root
+from zombies_start import DEFAULT_LAB, kathara_connect, project_root, role_nodes
 
 
 def die(message):
@@ -12,14 +12,14 @@ def die(message):
     sys.exit(1)
 
 
-def stop_command():
+def stop_command(node):
     return r"""
 set -u
 
 if [ -f /zombies_stop.py ]; then
     python3 /zombies_stop.py
-elif [ -f /hostlab/attacker/zombies_stop.py ]; then
-    python3 /hostlab/attacker/zombies_stop.py
+elif [ -f /hostlab/__NODE__/zombies_stop.py ]; then
+    python3 /hostlab/__NODE__/zombies_stop.py
 else
     python3 - <<'PY'
 import os
@@ -28,7 +28,7 @@ import threading
 
 ZOMBIE_PORT = 9999
 ZOMBIES_PATHS = (
-    "/hostlab/attacker/zombies.txt",
+    "/hostlab/__NODE__/zombies.txt",
     "/hostlab/zombies.txt",
     "/zombies.txt",
     "zombies.txt",
@@ -79,13 +79,13 @@ for thread in threads:
 print("[OK] Stop completato.")
 PY
 fi
-"""
+""".replace("__NODE__", node)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Stop the Kathara zombie load.")
     parser.add_argument("--lab", default=DEFAULT_LAB)
-    parser.add_argument("--attacker-node", default="attacker")
+    parser.add_argument("--attacker-node", help="controller node (default: the node with role attacker, else attacker)")
     args = parser.parse_args()
 
     root = project_root()
@@ -94,7 +94,8 @@ def main():
     if not lab_dir.exists():
         die(f"Lab not found: {lab_dir}")
 
-    rc, output = kathara_connect(lab_dir, args.attacker_node, stop_command())
+    attacker = args.attacker_node or next(iter(role_nodes(lab_dir, "attacker")), "attacker")
+    rc, output = kathara_connect(lab_dir, attacker, stop_command(attacker))
     print(output)
 
     if rc != 0:

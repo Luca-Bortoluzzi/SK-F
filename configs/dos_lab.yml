@@ -49,21 +49,21 @@ nodes:
     interfaces: [{network: lan_attackers, ip: 10.20.1.11/24}]
     files: zombie_1/
     startup:
-      - python3 /hostlab/zombie.py > /tmp/zombie.log 2>&1 &
+      - python3 /hostlab/zombie_1/zombie.py > /tmp/zombie.log 2>&1 &
     roles: [zombie]
 
   zombie_2:
     interfaces: [{network: lan_attackers, ip: 10.20.1.12/24}]
     files: zombie_2/
     startup:
-      - python3 /hostlab/zombie.py > /tmp/zombie.log 2>&1 &
+      - python3 /hostlab/zombie_2/zombie.py > /tmp/zombie.log 2>&1 &
     roles: [zombie]
 
   zombie_3:
     interfaces: [{network: lan_attackers, ip: 10.20.1.13/24}]
     files: zombie_3/
     startup:
-      - python3 /hostlab/zombie.py > /tmp/zombie.log 2>&1 &
+      - python3 /hostlab/zombie_3/zombie.py > /tmp/zombie.log 2>&1 &
     roles: [zombie]
 
   # DMZ - target server

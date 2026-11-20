@@ -4,7 +4,10 @@ attacker.py - educational C2 controller for a Kathara lab.
 It sends a bounded, time-limited load command to zombie agents.
 
 Usage inside the attacker container:
-  python3 /hostlab/attacker.py <TARGET_IP> <PORT> [connections_per_zombie] [duration_seconds]
+  python3 /hostlab/<attacker node>/attacker.py <TARGET_IP> <PORT> [connections_per_zombie] [duration_seconds]
+
+zombies.txt is read first from this script's own folder, which simulate.sh
+rewrites before every run, then from the usual lab locations.
 """
 import os
 import socket
@@ -12,7 +15,12 @@ import sys
 import threading
 
 ZOMBIE_PORT = 9999
-ZOMBIES_PATHS = ("/hostlab/zombies.txt", "/zombies.txt", "zombies.txt")
+ZOMBIES_PATHS = (
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "zombies.txt"),
+    "/hostlab/zombies.txt",
+    "/zombies.txt",
+    "zombies.txt",
+)
 DEFAULT_CONNECTIONS = 300
 DEFAULT_DURATION = 30
 MAX_CONNECTIONS_PER_ZOMBIE = 1000
@@ -57,7 +65,7 @@ def send_attack_command(zombie_ip: str, target_ip: str, target_port: int, connec
 
 def main() -> int:
     if len(sys.argv) < 3:
-        print("Usage: python3 /hostlab/attacker.py <TARGET_IP> <PORT> [connections_per_zombie] [duration_seconds]")
+        print("Usage: python3 attacker.py <TARGET_IP> <PORT> [connections_per_zombie] [duration_seconds]")
         return 1
 
     target_ip = sys.argv[1]

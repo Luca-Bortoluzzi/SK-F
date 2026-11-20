@@ -6,10 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
 LAB="mitigation"
 MODE="${SIM_MODE:-full}"
-TARGET="${SIM_TARGET:-server}"
-SERVER="${SIM_SERVER:-server}"
-SERVER_EXPLICIT=0
-[[ -z "${SIM_SERVER:-}" ]] || SERVER_EXPLICIT=1
+TARGET="${SIM_TARGET:-}"
+SERVER="${SIM_SERVER:-}"
 PORT="${SIM_PORT:-9000}"
 CLIENTS="${SIM_CLIENTS:-}"
 ATTEMPTS="${SIM_ATTEMPTS:-10}"
@@ -48,10 +46,14 @@ Examples:
 
 Main options:
   --mode full|baseline|attack
-  --target NODE_OR_IP      default: server [SIM_TARGET]
-  --server NODE            default: server; mitigation: backend_server [SIM_SERVER]
+  --target NODE_OR_IP      default: node with role proxy, else the server [SIM_TARGET]
+  --server NODE            default: node with role server, else node "server" [SIM_SERVER]
   --port N                 default: 9000 [SIM_PORT]
-  --clients "pc_a1 pc_a2"  default: all pc_* nodes
+  --clients "pc_a1 pc_a2"  default: nodes with role client, else all pc_* nodes
+
+Node roles come from roles.conf, written by the generator from the nodes'
+"roles" key. Without roles, nodes are recognised by name: server, attacker,
+zombie*, pc_*.
   --attempts N             default: 10
   --timeout N              measurement timeout, default: 3 [SIM_TIMEOUT]
   --delay N                delay between rounds, default: 1 [SIM_DELAY]
@@ -95,7 +97,7 @@ while [[ $# -gt 0 ]]; do
         full|baseline|attack|dos) MODE="$1"; shift ;;
         --mode) need_value "$@"; MODE="$2"; shift 2 ;;
         --target) need_value "$@"; TARGET="$2"; shift 2 ;;
-        --server) need_value "$@"; SERVER="$2"; SERVER_EXPLICIT=1; shift 2 ;;
+        --server) need_value "$@"; SERVER="$2"; shift 2 ;;
         --clients) need_value "$@"; CLIENTS="$2"; shift 2 ;;
         --attempts) need_value "$@"; ATTEMPTS="$2"; shift 2 ;;
         --startup-wait) need_value "$@"; STARTUP_WAIT="$2"; shift 2 ;;
@@ -117,10 +119,6 @@ while [[ $# -gt 0 ]]; do
         *) die "unknown argument: $1" ;;
     esac
 done
-
-if [[ "$LAB" == "mitigation" && "$SERVER_EXPLICIT" == 0 ]]; then
-    SERVER="server"
-fi
 
 [[ "$MODE" == "dos" ]] && MODE="attack"
 [[ "$MODE" == "full" || "$MODE" == "baseline" || "$MODE" == "attack" ]] || \
@@ -194,23 +192,46 @@ node_ip() {
         "$LAB_DIR/$1.startup" 2>/dev/null
 }
 
-ATTACKER="attacker"
+# Node roles written by the generator: one "node role..." line per node.
+ROLES_FILE="$LAB_DIR/roles.conf"
+role_nodes() {
+    [[ -f "$ROLES_FILE" ]] || return 0
+    awk -v role="$1" '$1 !~ /^#/ { for (i = 2; i <= NF; i++) if ($i == role) { print $1; break } }' "$ROLES_FILE"
+}
+first_role_node() {
+    role_nodes "$1" | head -n 1
+}
+
+[[ -n "$SERVER" ]] || SERVER="$(first_role_node server)"
+[[ -n "$SERVER" ]] || SERVER="server"
+[[ -n "$TARGET" ]] || TARGET="$(first_role_node proxy)"
+[[ -n "$TARGET" ]] || TARGET="$SERVER"
+ATTACKER="$(first_role_node attacker)"
+[[ -n "$ATTACKER" ]] || ATTACKER="attacker"
+
 has_node "$SERVER" || die "Server node '$SERVER' is missing from the lab."
 [[ -f "$LAB_DIR/$SERVER/service.py" ]] || die "$SERVER/service.py is missing from the lab."
 has_node "$ATTACKER" || die "Node '$ATTACKER' is missing from the lab."
 [[ -f "$LAB_DIR/$ATTACKER/attacker.py" ]] || die "$ATTACKER/attacker.py is missing from the lab."
 
+mapfile -t ZOMBIE_CANDIDATES < <(role_nodes zombie)
+if (( ${#ZOMBIE_CANDIDATES[@]} == 0 )); then
+    for node in "${NODES[@]}"; do
+        [[ "$node" == zombie* ]] && ZOMBIE_CANDIDATES+=("$node")
+    done
+fi
+
 ZOMBIES=()
 ZOMBIE_IPS=()
-for node in "${NODES[@]}"; do
-    [[ "$node" == zombie* ]] || continue
+for node in "${ZOMBIE_CANDIDATES[@]}"; do
+    has_node "$node" || die "Zombie node '$node' from roles.conf is missing from lab.conf."
     [[ -f "$LAB_DIR/$node/zombie.py" ]] || die "$node/zombie.py is missing from the lab."
     ip="$(node_ip "$node")"
     [[ -n "$ip" ]] || die "IP address missing in $node.startup"
     ZOMBIES+=("$node")
     ZOMBIE_IPS+=("$ip")
 done
-(( ${#ZOMBIES[@]} > 0 )) || die "The lab contains no zombie* nodes."
+(( ${#ZOMBIES[@]} > 0 )) || die "The lab contains no zombie nodes (role zombie or name zombie*)."
 
 if has_node "$TARGET"; then
     TARGET_IP="$(node_ip "$TARGET")"
@@ -222,6 +243,9 @@ else
 fi
 [[ -n "$TARGET_IP" ]] || die "Target '$TARGET' was not found among lab nodes/IP addresses."
 
+if [[ -z "$CLIENTS" ]]; then
+    CLIENTS="$(role_nodes client | paste -sd ' ' -)"
+fi
 if [[ -z "$CLIENTS" ]]; then
     for node in "${NODES[@]}"; do
         [[ "$node" =~ ^pc[_-] ]] && CLIENTS+="${CLIENTS:+ }$node"
@@ -382,7 +406,8 @@ log "Simulation: $SIMULATION_NAME"
 log "Results: $SIMULATION_DIR"
 log "Mode: $MODE"
 log "Server: $SERVER"
-log "Target: $TARGET_IP:$PORT"
+log "Attacker: $ATTACKER"
+log "Target: $TARGET ($TARGET_IP:$PORT)"
 log "Client: $CLIENTS"
 log "Zombie: ${ZOMBIES[*]} (${ZOMBIE_IPS[*]})"
 
@@ -415,7 +440,7 @@ LOG=/tmp/service.log
 SERVICE_PORT='$PORT'
 METRICS=/shared/server_metrics.csv
 
-for candidate in /hostlab/service.py '/hostlab/$SERVER/service.py' /shared/service.py; do
+for candidate in '/hostlab/$SERVER/service.py' /service.py /hostlab/service.py /shared/service.py; do
     [ -f "\$candidate" ] && SCRIPT="\$candidate" && break
 done
 [ -n "\$SCRIPT" ] || { echo '[ERROR] service.py not found in /hostlab or /shared'; return 1; }
@@ -552,7 +577,7 @@ measure() {
         set_server_scenario "$scenario"
         start_container_sampler "$scenario"
     fi
-    run "$ROOT/run_connection_tests.py" \
+    run python3 "$ROOT/run_connection_tests.py" \
         --lab "$LAB_DIR" \
         --target "$TARGET" \
         --port "$PORT" \
@@ -571,9 +596,9 @@ measure() {
     csv="$(latest_csv "$scenario")"
     [[ -n "$csv" ]] || die "No CSV was produced for '$scenario'."
     if (( PLOT )); then
-        run "$ROOT/show_connection_results.py" "$csv" --plot
+        run python3 "$ROOT/show_connection_results.py" "$csv" --plot
     else
-        run "$ROOT/show_connection_results.py" "$csv"
+        run python3 "$ROOT/show_connection_results.py" "$csv"
     fi
 }
 
@@ -584,7 +609,7 @@ start_zombies() {
 SCRIPT=
 LOG=/tmp/zombie.log
 
-for candidate in /hostlab/zombie.py '/hostlab/$node/zombie.py' /shared/zombie.py; do
+for candidate in '/hostlab/$node/zombie.py' /zombie.py /hostlab/zombie.py /shared/zombie.py; do
     [ -f "\$candidate" ] && SCRIPT="\$candidate" && break
 done
 [ -n "\$SCRIPT" ] || { echo '[ERROR] zombie.py not found in /hostlab or /shared'; return 1; }
@@ -613,7 +638,7 @@ SIM_ZOMBIE_BODY
 start_attack() {
     node_run "$ATTACKER" "start controlled attack" <<SIM_ATTACK_BODY
 SCRIPT=
-for candidate in /hostlab/attacker.py '/hostlab/$ATTACKER/attacker.py' /shared/attacker.py; do
+for candidate in '/hostlab/$ATTACKER/attacker.py' /attacker.py /hostlab/attacker.py /shared/attacker.py; do
     [ -f "\$candidate" ] && SCRIPT="\$candidate" && break
 done
 [ -n "\$SCRIPT" ] || { echo '[ERROR] attacker.py not found in /hostlab or /shared'; return 1; }
