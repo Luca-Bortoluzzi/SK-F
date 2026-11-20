@@ -38,8 +38,10 @@ nodes:
     ospf:
       router_id: 1.1.1.1
       areas:
-        - {id: 0, networks: [r1_r2, r1_r3]}
-        - {id: 10, networks: [lan_a]}
+        - id: 0
+          networks: [r1_r2, r1_r3]
+        - id: 10
+          networks: [lan_a]
 
   r2:
     type: router
@@ -51,9 +53,12 @@ nodes:
     ospf:
       router_id: 2.2.2.2
       areas:
-        - {id: 0, networks: [r1_r2, r2_r3]}
-        - {id: 10, networks: [lan_b]}
-        - {id: 20, networks: [r2_r4]}
+        - id: 0
+          networks: [r1_r2, r2_r3]
+        - id: 10
+          networks: [lan_b]
+        - id: 20
+          networks: [r2_r4]
 
   r3:
     type: router
@@ -66,8 +71,10 @@ nodes:
     ospf:
       router_id: 3.3.3.3
       areas:
-        - {id: 0, networks: [r1_r3, r2_r3, r3_r5]}
-        - {id: 20, networks: [lan_c, r3_r4]}
+        - id: 0
+          networks: [r1_r3, r2_r3, r3_r5]
+        - id: 20
+          networks: [lan_c, r3_r4]
 
   r4:
     type: router
@@ -78,7 +85,8 @@ nodes:
     ospf:
       router_id: 4.4.4.4
       areas:
-        - {id: 20, networks: [lan_d, r2_r4, r3_r4]}
+        - id: 20
+          networks: [lan_d, r2_r4, r3_r4]
 
   r5:
     type: router
@@ -88,5 +96,7 @@ nodes:
     ospf:
       router_id: 5.5.5.5
       areas:
-        - {id: 0, networks: [r3_r5]}
-        - {id: 30, networks: [dmz]}
+        - id: 0
+          networks: [r3_r5]
+        - id: 30
+          networks: [dmz]

@@ -94,7 +94,8 @@ nodes:
     ospf:
       router_id: 1.1.1.1
       areas:
-        - {id: 0, networks: [lan_a, r1_r2, r1_r3]}
+        - id: 0
+          networks: [lan_a, r1_r2, r1_r3]
 
   r2:
     type: router
@@ -106,7 +107,8 @@ nodes:
     ospf:
       router_id: 2.2.2.2
       areas:
-        - {id: 0, networks: [lan_b, r1_r2, r2_r4, r2_core]}
+        - id: 0
+          networks: [lan_b, r1_r2, r2_r4, r2_core]
 
   r3:
     type: router
@@ -117,7 +119,8 @@ nodes:
     ospf:
       router_id: 3.3.3.3
       areas:
-        - {id: 0, networks: [r1_r3, r3_r4, r3_core]}
+        - id: 0
+          networks: [r1_r3, r3_r4, r3_core]
 
   r4:
     type: router
@@ -128,7 +131,8 @@ nodes:
     ospf:
       router_id: 4.4.4.4
       areas:
-        - {id: 0, networks: [r2_r4, r3_r4, r4_core]}
+        - id: 0
+          networks: [r2_r4, r3_r4, r4_core]
 
   core:
     type: router
@@ -141,4 +145,5 @@ nodes:
     ospf:
       router_id: 5.5.5.5
       areas:
-        - {id: 0, networks: [r2_core, r3_core, r4_core, dmz_public, lan_attackers]}
+        - id: 0
+          networks: [r2_core, r3_core, r4_core, dmz_public, lan_attackers]

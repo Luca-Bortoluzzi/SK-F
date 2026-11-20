@@ -178,9 +178,14 @@ r2:
   ospf:
     router_id: 2.2.2.2
     areas:
-      - {id: 0, networks: [r1_r2]}
-      - {id: 10, type: totally_stub, networks: [lan_b]}
-      - {id: 20, type: stub, networks: [r2_r4]}
+      - id: 0
+        networks: [r1_r2]
+      - id: 10
+        type: totally_stub
+        networks: [lan_b]
+      - id: 20
+        type: stub
+        networks: [r2_r4]
 ```
 
 `r2` is an area border router between areas 0, 10 and 20. Every router of an
@@ -194,7 +199,8 @@ network is not listed do not run OSPF.
 | `networks` | list of `name` | yes | the router's networks where RIP version 2 runs |
 
 ```yaml
-rip: {networks: [rip_net, lan_r]}
+rip:
+  networks: [rip_net, lan_r]
 ```
 
 ### BGP
@@ -212,7 +218,11 @@ a1:
   interfaces:
     - {network: a_core, ip: 10.1.0.1/30}
     - {network: wan,    ip: 10.255.0.1/30}
-  ospf: {router_id: 1.1.1.1, areas: [{id: 0, networks: [a_core]}]}
+  ospf:
+    router_id: 1.1.1.1
+    areas:
+      - id: 0
+        networks: [a_core]
   bgp:
     asn: 65010
     router_id: 1.1.1.1
