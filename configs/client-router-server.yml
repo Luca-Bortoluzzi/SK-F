@@ -1,13 +1,11 @@
-lab_name: client-router-server
+# Placeholder: the topology is not written yet, so validation fails on purpose
+# ("nodes" needs at least one node).
+lab:
+  name: client-router-server
+  description: Simple topology with a LAN and DMZ
+  version: "2.0"
+  author: Luca-Bortoluzzi
+  email: luca.bortoluzzi921@edu.unito.it
+  web: http://www.kathara.org/
 
-description: Simple topology with a LAN and DMZ
-
-metadata:
-  description: "Multi-AS BGP topology"
-  version: 2.0
-  author: "Luca-Bortoluzzi"
-  email: "luca.bortoluzzi921@edu.unito.it"
-  web: "http://www.kathara.org/"
-
-nodes:
-  
+nodes: {}

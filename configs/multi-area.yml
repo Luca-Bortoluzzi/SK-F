@@ -1,154 +1,102 @@
-lab_name: Test1_multi_area
-
-description: Initial multi-area OSPF test with a server reachable through nc
-
-metadata:
-  description: "Testing connections with a server using multi-area OSPF"
-  version: 2.0
-  author: "Luca-Bortoluzzi"
-  email: "luca.bortoluzzi921@edu.unito.it"
-  web: "http://www.kathara.org/"
+# Multi-area OSPF: areas 10, 20 and 30 hang off the backbone (area 0).
+# r1, r2, r3 and r5 are area border routers; r4 is entirely inside area 20.
+# The server folder (server/) is next to this file.
+lab:
+  name: Test1_multi_area
+  description: Testing connections with a server using multi-area OSPF
+  version: "2.0"
+  author: Luca-Bortoluzzi
+  email: luca.bortoluzzi921@edu.unito.it
+  web: http://www.kathara.org/
 
 nodes:
   server:
-    type: host
-    interfaces:
-      - network: dmz
-        ip: 10.0.20.10/24
-    default_gateway: 10.0.20.1
-    services:
-      - name: simple_python_service
-        runtime: python3
-        file: service.py
-        port: 9000
-        autostart: true
+    interfaces: [{network: dmz, ip: 10.0.20.10/24}]
+    files: server/
+    startup:
+      - python3 /service.py > /tmp/service.log 2>&1 &
+    roles: [server]
 
   pc_a:
-    type: host
-    interfaces:
-      - network: lan_a
-        ip: 10.10.1.10/24
-    default_gateway: 10.10.1.1
+    interfaces: [{network: lan_a, ip: 10.10.1.10/24}]
 
   pc_b:
-    type: host
-    interfaces:
-      - network: lan_b
-        ip: 10.10.2.10/24
-    default_gateway: 10.10.2.1
+    interfaces: [{network: lan_b, ip: 10.10.2.10/24}]
 
   pc_c:
-    type: host
-    interfaces:
-      - network: lan_c
-        ip: 10.10.3.10/24
-    default_gateway: 10.10.3.1
+    interfaces: [{network: lan_c, ip: 10.10.3.10/24}]
 
   pc_d:
-    type: host
-    interfaces:
-      - network: lan_d
-        ip: 10.10.4.10/24
-    default_gateway: 10.10.4.1
+    interfaces: [{network: lan_d, ip: 10.10.4.10/24}]
 
   r1:
     type: router
     interfaces:
-      - network: lan_a
-        ip: 10.10.1.1/24
-        ospf_area: 10
-      - network: r1_r2
-        ip: 10.0.12.1/30
-        ospf_area: 0
-      - network: r1_r3
-        ip: 10.0.13.1/30
-        ospf_area: 0
-    frr:
-      enabled: true
-      protocol: ospf
+      - {network: lan_a, ip: 10.10.1.1/24}
+      - {network: r1_r2, ip: 10.0.12.1/30}
+      - {network: r1_r3, ip: 10.0.13.1/30}
+    ospf:
       router_id: 1.1.1.1
+      areas:
+        - id: 0
+          networks: [r1_r2, r1_r3]
+        - id: 10
+          networks: [lan_a]
 
   r2:
     type: router
     interfaces:
-      - network: lan_b
-        ip: 10.10.2.1/24
-        ospf_area: 10
-      - network: r1_r2
-        ip: 10.0.12.2/30
-        ospf_area: 0
-      - network: r2_r3
-        ip: 10.0.23.1/30
-        ospf_area: 0
-      - network: r2_r4
-        ip: 10.0.24.1/30
-        ospf_area: 20
-    frr:
-      enabled: true
-      protocol: ospf
+      - {network: lan_b, ip: 10.10.2.1/24}
+      - {network: r1_r2, ip: 10.0.12.2/30}
+      - {network: r2_r3, ip: 10.0.23.1/30}
+      - {network: r2_r4, ip: 10.0.24.1/30}
+    ospf:
       router_id: 2.2.2.2
+      areas:
+        - id: 0
+          networks: [r1_r2, r2_r3]
+        - id: 10
+          networks: [lan_b]
+        - id: 20
+          networks: [r2_r4]
 
   r3:
     type: router
     interfaces:
-      - network: lan_c
-        ip: 10.10.3.1/24
-        ospf_area: 20
-      - network: r1_r3
-        ip: 10.0.13.2/30
-        ospf_area: 0
-      - network: r2_r3
-        ip: 10.0.23.2/30
-        ospf_area: 0
-      - network: r3_r4
-        ip: 10.0.34.1/30
-        ospf_area: 20
-      - network: r3_r5
-        ip: 10.0.35.1/30
-        ospf_area: 0
-    frr:
-      enabled: true
-      protocol: ospf
+      - {network: lan_c, ip: 10.10.3.1/24}
+      - {network: r1_r3, ip: 10.0.13.2/30}
+      - {network: r2_r3, ip: 10.0.23.2/30}
+      - {network: r3_r4, ip: 10.0.34.1/30}
+      - {network: r3_r5, ip: 10.0.35.1/30}
+    ospf:
       router_id: 3.3.3.3
+      areas:
+        - id: 0
+          networks: [r1_r3, r2_r3, r3_r5]
+        - id: 20
+          networks: [lan_c, r3_r4]
 
   r4:
     type: router
     interfaces:
-      - network: lan_d
-        ip: 10.10.4.1/24
-        ospf_area: 20
-      - network: r2_r4
-        ip: 10.0.24.2/30
-        ospf_area: 20
-      - network: r3_r4
-        ip: 10.0.34.2/30
-        ospf_area: 20
-    frr:
-      enabled: true
-      protocol: ospf
+      - {network: lan_d, ip: 10.10.4.1/24}
+      - {network: r2_r4, ip: 10.0.24.2/30}
+      - {network: r3_r4, ip: 10.0.34.2/30}
+    ospf:
       router_id: 4.4.4.4
+      areas:
+        - id: 20
+          networks: [lan_d, r2_r4, r3_r4]
 
   r5:
     type: router
     interfaces:
-      - network: dmz
-        ip: 10.0.20.1/24
-        ospf_area: 30
-      - network: r3_r5
-        ip: 10.0.35.2/30
-        ospf_area: 0
-    frr:
-      enabled: true
-      protocol: ospf
+      - {network: dmz,   ip: 10.0.20.1/24}
+      - {network: r3_r5, ip: 10.0.35.2/30}
+    ospf:
       router_id: 5.5.5.5
-
-connection_tests:
-  enabled: true
-  scenario: ospf_multi_area
-  clients: [pc_a, pc_b, pc_c, pc_d]
-  target_node: server
-  target_ip: 10.0.20.10
-  port: 9000
-  attempts: 10
-  timeout: 2
-  delay: 1
+      areas:
+        - id: 0
+          networks: [r3_r5]
+        - id: 30
+          networks: [dmz]

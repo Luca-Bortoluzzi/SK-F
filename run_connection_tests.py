@@ -276,6 +276,31 @@ def resolve_lab_context(args: argparse.Namespace, interactive: bool) -> LabConte
     raise ValueError("Multiple labs exist in ./labs: use --lab <lab_name>.")
 
 
+def read_lab_roles(lab_dir: Path | None) -> dict[str, list[str]]:
+    """Node roles from roles.conf, written by the generator: one "node role..." line per node."""
+    if lab_dir is None or not (lab_dir / "roles.conf").exists():
+        return {}
+    roles: dict[str, list[str]] = {}
+    for line in (lab_dir / "roles.conf").read_text(encoding="utf-8", errors="ignore").splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and not fields[0].startswith("#"):
+            roles[fields[0]] = fields[1:]
+    return roles
+
+
+def nodes_with_role(lab_dir: Path | None, role: str) -> list[str]:
+    return [node for node, roles in read_lab_roles(lab_dir).items() if role in roles]
+
+
+def default_target_from_lab(lab_dir: Path | None) -> str | None:
+    """The public endpoint: a node with role proxy, else a node with role server."""
+    for role in ("proxy", "server"):
+        nodes = nodes_with_role(lab_dir, role)
+        if nodes:
+            return nodes[0]
+    return None
+
+
 def default_clients_from_docker() -> str:
     try:
         containers = list_docker_containers()
@@ -286,6 +311,9 @@ def default_clients_from_docker() -> str:
 
 
 def default_clients_from_lab(lab_dir: Path | None) -> str:
+    role_clients = nodes_with_role(lab_dir, "client")
+    if role_clients:
+        return " ".join(role_clients)
     docker_clients = default_clients_from_docker()
     if docker_clients:
         return docker_clients
@@ -531,7 +559,7 @@ def run_one_attempt(
 def build_config(args: argparse.Namespace, context: LabContext) -> TestConfig:
     interactive = not args.non_interactive
 
-    target_input = args.target
+    target_input = args.target or default_target_from_lab(context.lab_dir)
     port_value = str(args.port) if args.port is not None else ""
     clients_value = args.clients or ""
     scenario = args.scenario or "baseline"
@@ -731,11 +759,16 @@ def parse_args() -> argparse.Namespace:
         description="Measure ICMP RTT, TCP connection time, and application response time from Kathara nodes."
     )
     parser.add_argument("--lab", help="Lab name in ./labs or a lab path")
-    parser.add_argument("--target", help="Target server IP or node name, for example 10.0.20.10 or server")
+    parser.add_argument(
+        "--target",
+        help="Target server IP or node name, for example 10.0.20.10 or server. "
+        "If omitted, the node with role proxy, else the node with role server, from the lab's roles.conf.",
+    )
     parser.add_argument("--port", type=int, help="Service TCP port, for example 9000")
     parser.add_argument(
         "--clients",
-        help="Kathara clients separated by commas or spaces. If omitted, pc_* nodes are detected automatically.",
+        help="Kathara clients separated by commas or spaces. "
+        "If omitted, nodes with role client, else pc_* nodes, are detected automatically.",
     )
     parser.add_argument("--scenario", default="baseline", help="Scenario name, e.g. baseline or dos")
     parser.add_argument("--attempts", type=int, default=10, help="Number of simultaneous rounds")
@@ -752,7 +785,9 @@ def parse_args() -> argparse.Namespace:
         default=Path.cwd(),
         help=argparse.SUPPRESS,
     )
-    parser.add_argument("--non-interactive", action="store_true", help="Do not prompt; requires at least target and port")
+    parser.add_argument(
+        "--non-interactive", action="store_true", help="Do not prompt; requires a port and a target (or lab roles)"
+    )
     return parser.parse_args()
 
 
@@ -768,9 +803,9 @@ def main() -> int:
         csv_path = run_tests(config, output_dir)
         print("")
         print("To display the report:")
-        print(f"  ./show_connection_results.py {shlex.quote(str(csv_path))}")
+        print(f"  python3 show_connection_results.py {shlex.quote(str(csv_path))}")
         print("To generate the metric plots as well:")
-        print(f"  ./show_connection_results.py {shlex.quote(str(csv_path))} --plot")
+        print(f"  python3 show_connection_results.py {shlex.quote(str(csv_path))} --plot")
         return 0
     except KeyboardInterrupt:
         print("\n[INTERRUPTED] Test interrupted by the user.", file=sys.stderr)

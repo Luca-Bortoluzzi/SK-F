@@ -11,13 +11,18 @@ and produces CSV files, text reports, and optional plots.
 
 ## Features
 
-- Define hosts, routers, interfaces, collision domains, static routes, and startup
-  commands in YAML.
+- Describe hosts, routers, interfaces, collision domains, static routes, node
+  files, and startup commands in YAML with a closed vocabulary: every allowed key
+  is listed in a dictionary, and anything else is an error with a suggestion.
+- Describe routing explicitly: OSPF router IDs, areas and area types (stub,
+  totally stub, NSSA), RIP networks, and BGP AS numbers, router IDs, neighbors and
+  announced networks. Gateways, session addresses, and redistribution are derived
+  from the topology.
 - Generate FRRouting (FRR) configuration for OSPF, multi-area OSPF, RIP, BGP, and
   combinations of these protocols.
-- Validate addresses, subnets, gateways, routing declarations, and experiment
-  targets before creating files.
-- Import per-node files and attach a Wireshark node to selected networks.
+- Check addresses, subnets, gateways, and routing consistency before creating
+  files, reporting every problem at once with its line and column.
+- Attach a Wireshark node to selected networks.
 - Run baseline and load experiments with simultaneous requests from multiple
   clients, including automatic startup, routing checks, and cleanup.
 - Measure ICMP round-trip time, TCP connection time, application response time,
@@ -54,8 +59,8 @@ For PNG plots, also install Matplotlib:
 python3 -m pip install matplotlib
 ```
 
-Scripts are stored without executable permissions. Enable the entry points once;
-`simulate.sh` also executes the Python measurement and report scripts directly:
+The entry-point scripts are executable in the repository. If a copy lost the
+permissions (for example after extracting an archive), restore them with:
 
 ```bash
 chmod +x ./*.sh ./*.py
@@ -78,16 +83,15 @@ Client and service images must contain Python 3; clients also need `ping`.
 
 ## First experiment
 
-Validate and generate the supplied lab. `--import-dirs` includes the application
-and load-agent files stored next to the YAML configuration.
+Validate and generate the supplied lab. The nodes' `files` keys include the
+application and load-agent files stored next to the YAML configuration.
 
 ```bash
-python3 generate_lab.py dos_lab --import-dirs --validate-only
-python3 generate_lab.py dos_lab --import-dirs --wireshark disabled
+python3 generate_lab.py dos_lab --validate-only
+python3 generate_lab.py dos_lab
 ```
 
-This creates `labs/dos_lab/`. A warning that the `proxy` directory is skipped is
-expected: this topology has no proxy node.
+This creates `labs/dos_lab/`.
 
 Preview the workflow, then run a baseline with no generated attack traffic:
 
@@ -114,24 +118,24 @@ is named `dos` in filenames even though the command-line mode is `attack`.
 To compare the mitigation topology:
 
 ```bash
-python3 generate_lab.py mitigation --import-dirs --wireshark disabled
-./simulate.sh mitigation full --target proxy --server server --plot
+python3 generate_lab.py mitigation
+./simulate.sh mitigation full --plot
 ```
 
-Pass **`--target proxy`** for this topology. The YAML's `simulation.target_node`
-is validated but is not read by the simulator. Its default target is `server`,
-which is on the private backend network in this lab.
+The simulator reads the node roles written by the generator: in this topology the
+node with role `proxy` becomes the target, and the backend with role `server` is
+the measured application server.
 
 ## Working with a network manually
 
 For a small routing example without the experiment runner:
 
 ```bash
-python3 generate_lab.py Test1 --wireshark disabled
+python3 generate_lab.py Test1
 bash start.sh labs/test
 ```
 
-The output directory uses the YAML's `lab_name`, which is `test` in this example.
+The output directory uses the YAML's `lab.name`, which is `test` in this example.
 To inspect a node, open a terminal in the generated directory:
 
 ```bash
@@ -146,12 +150,27 @@ stop the lab with:
 bash stop.sh labs/test
 ```
 
+## Generated files
+
+The tools write only to three folders at the repository root. They are listed in
+`.gitignore`, so they never end up in a commit:
+
+| Folder | Written by | Contents |
+| --- | --- | --- |
+| `labs/<lab.name>/` | `generate_lab.py` | the Katharà lab: `lab.conf`, startup files, node folders, `roles.conf` |
+| `results/<lab>/simulation_<n>/` | `simulate.sh`, `run_connection_tests.py` | connection CSVs, server metrics, plots |
+| `logs/<lab>/` | `run_connection_tests.py` | measurement logs, one folder per client |
+
+Keep the sources in `configs/` and regenerate a lab with `--force` rather than
+editing it. `del_lab.sh` and `clear_results.sh` remove these folders; see
+[Running experiments](docs/running-experiments.md#stop-and-remove-generated-data).
+
 ## Documentation
 
 | Guide | What it covers |
 | --- | --- |
 | [Example configurations](configs/README.md) | Available topologies, their output names, and sample limitations |
-| [Configuration reference](docs/configuration.md) | YAML fields, routing, file imports, validation, and Wireshark |
+| [Configuration reference](docs/configuration.md) | YAML syntax, OSPF/RIP/BGP sections, derived values, validation rules, and Wireshark |
 | [Running experiments](docs/running-experiments.md) | Simulator options, manual tests, lifecycle, and service settings |
 | [Results and metrics](docs/results.md) | Output files, CSV columns, reports, and interpretation |
 | [Troubleshooting](docs/troubleshooting.md) | Setup failures, routing, missing services, and unexpected results |
@@ -168,4 +187,4 @@ python3 run_connection_tests.py --help
 
 ## License
 
-SK-F is distributed under the [MIT license](LICENSE).
+SK-F is distributed under the [GNU General Public License v3.0](LICENSE).

@@ -8,7 +8,8 @@ its matching agent. Use the supplied generated lab as the target environment.
 
 ## Timed connection-holding agents
 
-The standard `simulate.sh` workflow uses files imported from `configs/`:
+The standard `simulate.sh` workflow uses files that the example labs copy from
+`configs/` through their nodes' `files` keys:
 
 | Component | Source |
 | --- | --- |
@@ -49,15 +50,16 @@ There is no duration argument or automatic end time. The controller defaults to
 Those are controller-side bounds, not validation performed by the agent itself.
 
 The host helper `python3 zombies_start.py --lab dos_lab` copies this STOP-capable
-agent to the generated lab's `shared/zombie.py` and starts it on discovered
-`zombie*` nodes. It does not replace already running agents unless `--restart`
+agent to the generated lab's `shared/zombie.py` and starts it on the nodes with
+role `zombie` (else the `zombie*` nodes). It does not replace already running agents unless `--restart`
 is passed. Options include `--nodes zombie_1,zombie_2`, `--source PATH`, and
 `--shared-script NAME`. With `--restart`, matching Python processes are forcibly
 terminated before the selected script starts. Logs are written beside the shared
 script, normally `shared/zombie.log`; multiple agents may write that same path.
 
 To end load for this implementation, `python3 zombies_stop.py --lab dos_lab`
-dispatches `STOP` through the attacker node; `--attacker-node` selects a different
+dispatches `STOP` through the attacker node (role `attacker`, else the node named
+`attacker`); `--attacker-node` selects a different
 controller node. The matching in-container helper is
 `attacks/attacker/zombies_stop.py`. An address list must exist in one of the paths
 searched by the controller/stop helper. The root helpers locate the repository's

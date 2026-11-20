@@ -31,7 +31,7 @@ contain only a header if no Docker sample was collected. Standalone connection
 tests produce the connection CSVs and logs, not these two server metrics files.
 
 The simulator anchors `results/` and `logs/` to the repository containing
-`simulate.sh`. Standalone tests default to the current working directory unless
+`simulate.sh`; both folders are listed in `.gitignore`. Standalone tests default to the current working directory unless
 `--output-dir` is set. The generated lab directory's basename determines the
 result subdirectory; different paths with the same basename share that namespace.
 

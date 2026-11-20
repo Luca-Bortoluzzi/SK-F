@@ -5,7 +5,7 @@
 Start with local validation and an execution preview:
 
 ```bash
-python3 generate_lab.py dos_lab --import-dirs --validate-only
+python3 generate_lab.py dos_lab --validate-only
 ./simulate.sh dos_lab baseline --dry-run
 ```
 
@@ -17,24 +17,25 @@ container images, live routes, or service availability.
 
 | Symptom | What to check |
 | --- | --- |
-| `Permission denied` when running a script | Run `chmod +x ./*.sh ./*.py` from the repository root. Invoking the simulator through Bash alone does not make its directly executed Python helpers executable. |
+| `Permission denied` when running a script | The copy lost the executable bits: run `chmod +x ./*.sh ./*.py` from the repository root, or call the script through `bash` or `python3`. |
 | `PyYAML is not installed` | Activate `.venv` and run `python3 -m pip install PyYAML`. |
 | Python syntax/type-annotation errors | Use Python 3.10+ on the host and for the supplied container scripts. |
 | `kathara`, `docker`, or `timeout` not found | Complete setup and check `PATH`. The simulator expects Linux/GNU utilities and Katharà's Docker backend. |
 | Docker daemon or socket permission error | Verify `docker ps` works as the same user. Check Docker installation/service and user access using the official installation instructions. |
 | `start.sh` cannot open terminal windows | Configure an available terminal in Katharà, or run `kathara lstart --noterminals` from the generated lab directory. The simulator already uses this headless mode. |
 | Configuration not found | Use a filename stem with its exact case, such as `multi_AS`, or pass `configs/multi_AS.yml`. |
-| Lab directory already exists | Stop it, then choose `--force` to merge/overwrite or `--clean` to delete and regenerate. |
-| Lab not found after generation | Look at YAML `lab_name`, not just its filename: `Test1` creates `labs/test`, and `multi-area` creates `labs/Test1_multi_area`. |
+| Lab directory already exists | Stop it, then use `--force` to replace it. |
+| Lab not found after generation | Look at YAML `lab.name`, not just its filename: `Test1` creates `labs/test`, and `multi-area` creates `labs/Test1_multi_area`. |
 | `client-router-server` fails validation | This is an unfinished placeholder with no nodes; choose a populated example. |
-| A directory import is skipped | Its name does not match a node in this topology. This is expected for `configs/proxy/` when generating `dos_lab`. |
+| `'lab_name' belongs to the previous syntax` | The file uses the old syntax; the message says what replaces each key. See the [configuration reference](configuration.md). |
 
 ## Missing service or load files
 
-The experiment labs need `--import-dirs`. To regenerate an existing stopped lab:
+The experiment labs copy these files through the nodes' `files` keys. To
+regenerate an existing stopped lab:
 
 ```bash
-python3 generate_lab.py dos_lab --import-dirs --force --wireshark disabled
+python3 generate_lab.py dos_lab --force
 ```
 
 Check that `labs/dos_lab/server/service.py`, its sibling `server_metrics.py`,
@@ -42,12 +43,10 @@ Check that `labs/dos_lab/server/service.py`, its sibling `server_metrics.py`,
 inside containers, so host-relative paths such as `configs/server/service.py`
 will not work there. Check the files actually mounted in `/hostlab` and `/shared`.
 
-Some `dos_lab` zombie startup commands use `/hostlab/zombie.py`; with a lab-root
-mount, the file is instead under `/hostlab/zombie_1/zombie.py` (and similarly for
-other agents). The simulator searches these node-specific paths and starts the
-agents when needed. For a manual startup workflow, use the correct path in each
-node's YAML `commands`. The `multi-area` example's `services` declaration is not
-implemented by the generator; add a startup command before testing its service.
+A node's `files` folder is visible in its container both as `/hostlab/<node>/`
+and copied into the root: `zombie_1/zombie.py` is `/hostlab/zombie_1/zombie.py`
+and `/zombie.py`. The example labs start their agents from `/hostlab/<node>/`;
+the simulator searches both places and starts the agents when needed.
 
 ## Routes and mitigation
 
@@ -58,18 +57,24 @@ directory:
 
 ```bash
 cd labs/dos_lab
-kathara exec pc_a1 ip route
-kathara exec pc_a1 ping -c 1 10.30.1.10
-kathara exec r1 vtysh -c 'show ip route'
-kathara exec r1 vtysh -c 'show ip ospf neighbor'
+kathara exec pc_a1 "ip route"
+kathara exec pc_a1 "ping -c 1 10.30.1.10"
+kathara exec r1 "vtysh -c 'show ip route'"
+kathara exec r1 "vtysh -c 'show ip ospf neighbor'"
+kathara exec r1 "vtysh -c 'show bgp summary'"
 ```
 
-Check matching collision domains, interface addresses, default gateways, FRR
-configuration, and forwarding. Increase `--startup-wait` or `--routing-timeout`
+Quote the whole command: without quotes, options such as `-c` or `-n` are read
+by `kathara exec` itself and the command fails.
+
+Check matching collision domains, interface addresses, default gateways, the
+networks listed in each router's `ospf`, `rip` and `bgp` sections, and the
+generated `<router>/etc/frr/frr.conf`. A network in `bgp.networks` is announced
+only when the router has a route to it. Increase `--startup-wait` or `--routing-timeout`
 when the configuration is correct but convergence is slow. ICMP filtering also
 prevents the simulator from passing its readiness check.
 
-For mitigation, use `--target proxy --server server`. The private backend
+In mitigation the simulator targets the node with role `proxy`. The private backend
 `10.30.2.10` is not routed from the clients; the public proxy is `10.30.1.10`.
 The simulator does not start the proxy on demand. Inspect its startup and backend
 reachability if clients can ping the proxy but cannot obtain `pong`.
@@ -79,14 +84,14 @@ reachability if clients can ping the proxy but cannot obtain `pong`.
 From the generated lab directory:
 
 ```bash
-kathara exec server tail -n 40 /tmp/service.log
-kathara exec zombie_1 tail -n 40 /tmp/zombie.log
+kathara exec server "tail -n 40 /tmp/service.log"
+kathara exec zombie_1 "tail -n 40 /tmp/zombie.log"
 ```
 
 In the mitigation lab, also run:
 
 ```bash
-kathara exec proxy tail -n 40 /tmp/reverse_proxy.log
+kathara exec proxy "tail -n 40 /tmp/reverse_proxy.log"
 ```
 
 The simulator's `kathara exec ... did not return a command result` error means it
@@ -108,7 +113,7 @@ is mounted, and the shell command can execute. For slow container startup, tune
 | No container resource statistics | Check Docker access, server container discovery, and whether `server_container_metrics.csv` has data beyond its header. |
 | Latest report shows the wrong lab | The report searches all connection CSVs under the current `results/` by modification time. Supply the exact path. |
 | Plot generation fails | Install Matplotlib in the active environment. On a headless host, run with `MPLBACKEND=Agg`. |
-| Wireshark is present despite `--wireshark disabled` | A YAML network selection takes precedence. Use `--wireshark-networks 0`. |
+| Wireshark is present | The YAML has a `capture` section. Use `--capture none` to generate without it. |
 | Wireshark GUI unavailable | Check that its container started, host port 3000 is free, and the installed image's access requirements. |
 
 To stop a retained lab, return to the repository root and run

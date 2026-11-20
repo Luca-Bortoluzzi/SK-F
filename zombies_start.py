@@ -126,9 +126,27 @@ def project_root():
     die("labs/ directory not found. Run the script from the project root.")
 
 
+def role_nodes(lab_dir, role):
+    """Nodes with ``role`` in the lab's roles.conf, written by the generator."""
+    roles_file = lab_dir / "roles.conf"
+    if not roles_file.exists():
+        return []
+    nodes = []
+    for line in roles_file.read_text(encoding="utf-8").splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and not fields[0].startswith("#") and role in fields[1:]:
+            nodes.append(fields[0])
+    return nodes
+
+
 def zombie_nodes(lab_conf):
+    """Nodes with role zombie, else nodes whose name starts with zombie."""
     if not lab_conf.exists():
         die(f"lab.conf file not found: {lab_conf}")
+
+    by_role = role_nodes(lab_conf.parent, "zombie")
+    if by_role:
+        return by_role
 
     nodes = set()
 
